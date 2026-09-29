@@ -1,0 +1,19 @@
+per_listener_settings false
+listener 1883
+protocol mqtt
+allow_anonymous false
+sys_interval 10
+persistence false
+log_dest stdout
+
+plugin /mosquitto/go-auth.so
+auth_opt_backends http
+auth_opt_cache false
+auth_opt_http_host __API_HOST__
+auth_opt_http_port 8080
+auth_opt_http_getuser_uri /internal/mqtt/auth
+auth_opt_http_superuser_uri /internal/mqtt/superuser
+auth_opt_http_aclcheck_uri /internal/mqtt/acl
+auth_opt_http_params_mode json
+auth_opt_http_response_mode status
+auth_opt_http_timeout 5

@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: meshcore
+      POSTGRES_PASSWORD: meshcore
+      POSTGRES_DB: meshcore
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meshcore"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=meshcore;Username=meshcore;Password=meshcore
+      Jwt__Key: dev-only-change-this-jwt-signing-key!!
+      Jwt__Issuer: meshcore
+      Internal__Token: dev-internal-token
+      Admin__Email: admin@localhost
+      Admin__Password: admin
+      Mqtt__Superuser: stats
+      Mqtt__SuperuserPassword: dev-stats-password
+      Mqtt__PublicHost: localhost
+      Mqtt__PublicPort: 8883
+      Certs__Directory: /certs
+      Proxy__DropUrl: http://proxy:9090/internal/drop
+      Proxy__ReloadUrl: http://proxy:9090/internal/reload-cert
+    volumes:
+      - certdata:/certs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  proxy:
+    build:
+      context: .
+      dockerfile: docker/proxy.Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:9090
+      Internal__Token: dev-internal-token
+      Api__Url: http://api:8080
+      Mqtt__PublicHost: localhost
+      Mqtt__Port: 8883
+      Certs__Directory: /certs
+    ports:
+      - "8883:8883"
+    volumes:
+      - certdata:/certs
+    depends_on:
+      - api
+
+  mosquitto:
+    image: iegomez/mosquitto-go-auth:3.0.0-mosquitto_2.0.18
+    environment:
+      INTERNAL_TOKEN: dev-internal-token
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf.template:/etc/mosquitto/mosquitto.conf.template:ro
+      - ./docker/mosquitto/entrypoint.sh:/entrypoint.sh:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    ports:
+      - "8088:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  certdata:

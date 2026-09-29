@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{97525BCC-39B0-4410-8274-8D8CEE558991}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshCoreMqtt.Core", "src\MeshCoreMqtt.Core\MeshCoreMqtt.Core.csproj", "{E59A467D-73FA-4C50-86FE-3B402EEB3BD6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshCoreMqtt.Api", "src\MeshCoreMqtt.Api\MeshCoreMqtt.Api.csproj", "{03E3CE27-CB74-423B-ABE4-79AE153BF30B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshCoreMqtt.Proxy", "src\MeshCoreMqtt.Proxy\MeshCoreMqtt.Proxy.csproj", "{92CC2C60-EFA1-4EB9-89F8-22D65A52BBE5}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{1A252C0E-A58E-4444-8E21-7299A99EFCF4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshCoreMqtt.Core.Tests", "tests\MeshCoreMqtt.Core.Tests\MeshCoreMqtt.Core.Tests.csproj", "{7662F3DC-0102-4FEC-A02F-F685D71D6467}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E59A467D-73FA-4C50-86FE-3B402EEB3BD6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E59A467D-73FA-4C50-86FE-3B402EEB3BD6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E59A467D-73FA-4C50-86FE-3B402EEB3BD6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E59A467D-73FA-4C50-86FE-3B402EEB3BD6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{03E3CE27-CB74-423B-ABE4-79AE153BF30B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{03E3CE27-CB74-423B-ABE4-79AE153BF30B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{03E3CE27-CB74-423B-ABE4-79AE153BF30B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{03E3CE27-CB74-423B-ABE4-79AE153BF30B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{92CC2C60-EFA1-4EB9-89F8-22D65A52BBE5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{92CC2C60-EFA1-4EB9-89F8-22D65A52BBE5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{92CC2C60-EFA1-4EB9-89F8-22D65A52BBE5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{92CC2C60-EFA1-4EB9-89F8-22D65A52BBE5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7662F3DC-0102-4FEC-A02F-F685D71D6467}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7662F3DC-0102-4FEC-A02F-F685D71D6467}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7662F3DC-0102-4FEC-A02F-F685D71D6467}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7662F3DC-0102-4FEC-A02F-F685D71D6467}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{E59A467D-73FA-4C50-86FE-3B402EEB3BD6} = {97525BCC-39B0-4410-8274-8D8CEE558991}
+		{03E3CE27-CB74-423B-ABE4-79AE153BF30B} = {97525BCC-39B0-4410-8274-8D8CEE558991}
+		{92CC2C60-EFA1-4EB9-89F8-22D65A52BBE5} = {97525BCC-39B0-4410-8274-8D8CEE558991}
+		{7662F3DC-0102-4FEC-A02F-F685D71D6467} = {1A252C0E-A58E-4444-8E21-7299A99EFCF4}
+	EndGlobalSection
+EndGlobal
