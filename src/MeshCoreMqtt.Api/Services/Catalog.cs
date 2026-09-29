@@ -289,9 +289,16 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         };
         var password = SecretText.Password();
         device.PasswordHash = passwords.HashDevice(device, password);
-        var certificate = (await File.ReadAllTextAsync(Path.Combine(secrets.Value.CertsDirectory, "ca.crt"), ct)).Trim();
-        if (certificate.Length == 0)
-            throw new AppException(500, "Сертификат ещё не выпущен");
+        string certificate;
+        try
+        {
+            certificate = CertificateFiles.FirstCertificate(
+                await File.ReadAllTextAsync(Path.Combine(secrets.Value.CertsDirectory, "ca.crt"), ct));
+        }
+        catch (CertificateException ex)
+        {
+            throw new AppException(500, ex.Message);
+        }
         db.DeviceLogins.Add(device);
         await db.SaveChangesAsync(ct);
         cache.Invalidate();
@@ -304,7 +311,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 secrets.Value.PublicPort,
                 device.Username,
                 password,
-                certificate.Trim())
+                certificate)
         };
     }
 

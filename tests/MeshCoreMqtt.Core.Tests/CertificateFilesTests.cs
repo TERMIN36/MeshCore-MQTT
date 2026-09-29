@@ -67,6 +67,25 @@ public class CertificateFilesTests
     }
 
     [Fact]
+    public void FirstCertificate_keeps_only_the_first_in_the_chain()
+    {
+        const string first = """
+            -----BEGIN CERTIFICATE-----
+            AAAA
+            -----END CERTIFICATE-----
+            """;
+        const string second = """
+            -----BEGIN CERTIFICATE-----
+            BBBB
+            -----END CERTIFICATE-----
+            """;
+        var chain = first.Replace("\r\n", "\n") + "\n" + second.Replace("\r\n", "\n") + "\n";
+
+        Assert.Equal(first.Replace("\r\n", "\n"), CertificateFiles.FirstCertificate(chain));
+        Assert.Throws<CertificateException>(() => CertificateFiles.FirstCertificate("   "));
+    }
+
+    [Fact]
     public void NormalizeHost_rejects_empty_and_wildcard()
     {
         Assert.Throws<CertificateException>(() => CertificateFiles.NormalizeHost("  "));

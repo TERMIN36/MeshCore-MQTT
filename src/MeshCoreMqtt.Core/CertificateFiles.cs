@@ -48,6 +48,20 @@ public static class CertificateFiles
         });
     }
 
+    public static string FirstCertificate(string? pem)
+    {
+        var text = (pem ?? "").Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        const string begin = "-----BEGIN CERTIFICATE-----";
+        const string end = "-----END CERTIFICATE-----";
+        var start = text.IndexOf(begin, StringComparison.Ordinal);
+        if (start < 0)
+            throw new CertificateException("Сертификат ещё не выпущен");
+        var stop = text.IndexOf(end, start + begin.Length, StringComparison.Ordinal);
+        if (stop < 0)
+            throw new CertificateException("Сертификат ещё не выпущен");
+        return text[start..(stop + end.Length)];
+    }
+
     public static string? ReadHost(string directory)
     {
         var path = Path.Combine(directory, "public.host");

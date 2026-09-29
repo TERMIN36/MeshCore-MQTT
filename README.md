@@ -6,8 +6,23 @@
 
 ## Запуск
 
+На ВМ ставят Docker с Compose и git, затем клонируют репозиторий. Команды ниже выполняют из корня клона. Образы API, прокси и панели собираются или скачиваются. Конфиг брокера в образы не входит: до первого запуска на диске должны лежать файлы `docker/mosquitto/entrypoint.sh` и `docker/mosquitto/mosquitto.conf.template`. Если этих путей нет, Docker создаёт на их месте каталоги. Контейнер брокера тогда сразу завершается с кодом 0, `docker logs` пустой, в панели у узла «нет связи».
+
 ```bash
+git clone https://github.com/TERMIN36/MeshCore-MQTT.git
+cd MeshCore-MQTT
+test -f docker/mosquitto/entrypoint.sh
+test -f docker/mosquitto/mosquitto.conf.template
 docker compose up --build
+```
+
+`test -f` должен завершиться без сообщения. Если вместо файлов уже появились каталоги, их удаляют и возвращают файлы из git:
+
+```bash
+docker compose rm -sf mosquitto
+rm -rf docker/mosquitto/entrypoint.sh docker/mosquitto/mosquitto.conf.template
+git checkout -- docker/mosquitto/entrypoint.sh docker/mosquitto/mosquitto.conf.template
+docker compose up -d mosquitto
 ```
 
 Панель: `http://localhost:8088`
@@ -59,7 +74,7 @@ dotnet test
 - `ghcr.io/termin36/meshcore-mqtt-proxy`
 - `ghcr.io/termin36/meshcore-mqtt-web`
 
-`docker compose up --build` по-прежнему собирает образы локально. Готовые образы подтягиваются так:
+`docker compose up --build` по-прежнему собирает образы локально. Готовые образы подтягиваются из корня клона. Файлы Mosquitto при этом остаются на диске, в образы они не входят:
 
 ```bash
 docker compose pull
