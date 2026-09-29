@@ -1,3 +1,7 @@
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -84,6 +88,96 @@ public class CertificateFilesTests
         Assert.Equal(first.Replace("\r\n", "\n"), CertificateFiles.FirstCertificate(chain));
         Assert.Throws<CertificateException>(() => CertificateFiles.FirstCertificate("   "));
     }
+
+    [Fact]
+    public async Task Handshake_presents_the_leaf_and_the_issuer_chain()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "meshcore-certs-" + Guid.NewGuid().ToString("n"));
+        using var rootKey = RSA.Create(2048);
+        using var intermediateKey = RSA.Create(2048);
+        using var leafKey = RSA.Create(2048);
+        var root = IssueCa("CN=Test Root", rootKey, null);
+        var intermediate = IssueCa("CN=Test Intermediate", intermediateKey, root);
+        var leaf = IssueLeaf("mqtt.example", leafKey, intermediate);
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "server.crt"), Pem("CERTIFICATE", intermediate.RawData) + Pem("CERTIFICATE", leaf.RawData));
+            File.WriteAllText(Path.Combine(directory, "server.key"), Pem("PRIVATE KEY", leafKey.ExportPkcs8PrivateKey()));
+            File.WriteAllText(Path.Combine(directory, "ca.crt"), Pem("CERTIFICATE", root.RawData));
+
+            var identity = CertificateFiles.LoadServerIdentity(directory);
+            Assert.Equal(leaf.RawData, identity.Leaf.RawData);
+
+            var context = SslStreamCertificateContext.Create(identity.Leaf, identity.Extras, offline: true);
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var server = Task.Run(async () =>
+            {
+                using var accepted = await listener.AcceptTcpClientAsync();
+                await using var ssl = new SslStream(accepted.GetStream());
+                await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+                {
+                    ServerCertificateContext = context,
+                    ClientCertificateRequired = false,
+                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+                });
+            });
+
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(IPAddress.Loopback, port);
+            var policy = new X509ChainPolicy
+            {
+                TrustMode = X509ChainTrustMode.CustomRootTrust,
+                RevocationMode = X509RevocationMode.NoCheck
+            };
+            policy.CustomTrustStore.Add(root);
+            await using var client = new SslStream(tcp.GetStream());
+            await client.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = "mqtt.example",
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                CertificateChainPolicy = policy
+            });
+
+            Assert.Equal(leaf.Thumbprint, client.RemoteCertificate?.GetCertHashString());
+            await server;
+            listener.Stop();
+        }
+        finally
+        {
+            root.Dispose();
+            intermediate.Dispose();
+            leaf.Dispose();
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    static X509Certificate2 IssueCa(string subject, RSA key, X509Certificate2? issuer)
+    {
+        var request = new CertificateRequest(subject, key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+        if (issuer is null)
+            return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
+        using var issued = request.Create(issuer, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5), [1]);
+        return issued.CopyWithPrivateKey(key);
+    }
+
+    static X509Certificate2 IssueLeaf(string host, RSA key, X509Certificate2 issuer)
+    {
+        var request = new CertificateRequest($"CN={host}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var san = new SubjectAlternativeNameBuilder();
+        san.AddDnsName(host);
+        request.CertificateExtensions.Add(san.Build());
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+        return request.Create(issuer, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(2), [2]);
+    }
+
+    static string Pem(string label, byte[] data) => new string(PemEncoding.Write(label, data)) + "\n";
 
     [Fact]
     public void NormalizeHost_rejects_empty_and_wildcard()

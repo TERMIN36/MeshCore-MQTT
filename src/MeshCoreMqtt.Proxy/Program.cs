@@ -44,22 +44,28 @@ static bool InternalTokenOk(HttpRequest request, string token)
 sealed class ServerCertificate
 {
     readonly string _directory;
-    X509Certificate2 _current;
+    SslStreamCertificateContext _current;
 
     public ServerCertificate(IConfiguration configuration)
     {
         _directory = configuration["Certs:Directory"] ?? "certs";
         var host = CertificateFiles.ReadHost(_directory) ?? configuration["Mqtt:PublicHost"] ?? "localhost";
         CertificateFiles.Ensure(_directory, host);
-        _current = CertificateFiles.LoadServerCertificate(_directory);
+        _current = Build();
     }
 
-    public X509Certificate2 Current => Volatile.Read(ref _current);
+    public SslStreamCertificateContext Current => Volatile.Read(ref _current);
 
     public void Reload()
     {
-        var next = CertificateFiles.LoadServerCertificate(_directory);
+        var next = Build();
         Interlocked.Exchange(ref _current, next);
+    }
+
+    SslStreamCertificateContext Build()
+    {
+        var identity = CertificateFiles.LoadServerIdentity(_directory);
+        return SslStreamCertificateContext.Create(identity.Leaf, identity.Extras, offline: true);
     }
 }
 
@@ -148,7 +154,7 @@ sealed class MqttFront(IConfiguration configuration, Sessions sessions, RouteTab
         }
     }
 
-    async Task Accept(TcpClient client, X509Certificate2 certificate, CancellationToken stoppingToken)
+    async Task Accept(TcpClient client, SslStreamCertificateContext certificate, CancellationToken stoppingToken)
     {
         using var tcp = client;
         try
@@ -156,7 +162,7 @@ sealed class MqttFront(IConfiguration configuration, Sessions sessions, RouteTab
             await using var ssl = new SslStream(client.GetStream(), false);
             await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
             {
-                ServerCertificate = certificate,
+                ServerCertificateContext = certificate,
                 ClientCertificateRequired = false,
                 EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
             }, stoppingToken);

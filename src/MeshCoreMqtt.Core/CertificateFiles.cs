@@ -289,10 +289,82 @@ public static class CertificateFiles
 
     public static X509Certificate2 LoadServerCertificate(string directory)
     {
-        var cert = X509Certificate2.CreateFromPemFile(
-            Path.Combine(directory, "server.crt"),
-            Path.Combine(directory, "server.key"));
-        return new X509Certificate2(cert.Export(X509ContentType.Pkcs12));
+        var identity = LoadServerIdentity(directory);
+        foreach (var extra in identity.Extras)
+            extra.Dispose();
+        return identity.Leaf;
+    }
+
+    public static ServerIdentity LoadServerIdentity(string directory)
+    {
+        var serverPem = File.ReadAllText(Path.Combine(directory, "server.crt"));
+        var keyPem = File.ReadAllText(Path.Combine(directory, "server.key"));
+        using var key = RSA.Create();
+        try
+        {
+            key.ImportFromPem(keyPem);
+        }
+        catch (Exception ex) when (ex is not CertificateException)
+        {
+            throw new CertificateException("Не удалось прочитать приватный ключ");
+        }
+
+        var keyInfo = key.ExportSubjectPublicKeyInfo();
+        var all = new X509Certificate2Collection();
+        try
+        {
+            all.ImportFromPem(serverPem);
+        }
+        catch (Exception ex) when (ex is not CertificateException)
+        {
+            throw new CertificateException("Сертификат ещё не выпущен");
+        }
+
+        var caPath = Path.Combine(directory, "ca.crt");
+        if (File.Exists(caPath))
+        {
+            var caPem = File.ReadAllText(caPath);
+            if (caPem.Contains("BEGIN CERTIFICATE", StringComparison.Ordinal))
+            {
+                try
+                {
+                    all.ImportFromPem(caPem);
+                }
+                catch (Exception ex) when (ex is not CertificateException)
+                {
+                    throw new CertificateException("Сертификат ещё не выпущен");
+                }
+            }
+        }
+
+        X509Certificate2? leaf = null;
+        foreach (var cert in all)
+        {
+            using var publicKey = cert.GetRSAPublicKey();
+            if (publicKey is not null && publicKey.ExportSubjectPublicKeyInfo().AsSpan().SequenceEqual(keyInfo))
+            {
+                leaf = cert;
+                break;
+            }
+        }
+
+        if (leaf is null)
+            throw new CertificateException("Сертификат не соответствует приватному ключу");
+
+        using var withKey = leaf.CopyWithPrivateKey(key);
+        var leafWithKey = new X509Certificate2(withKey.Export(X509ContentType.Pkcs12));
+        var leafRaw = Convert.ToHexString(leaf.RawData);
+        var extras = new X509Certificate2Collection();
+        var seen = new HashSet<string>(StringComparer.Ordinal) { leafRaw };
+        foreach (var cert in all)
+        {
+            var raw = Convert.ToHexString(cert.RawData);
+            if (!seen.Add(raw))
+                continue;
+            extras.Add(cert);
+        }
+
+        return new ServerIdentity(leafWithKey, extras);
     }
 
     static void WritePem(string path, string label, byte[] data)
@@ -303,6 +375,8 @@ public static class CertificateFiles
         File.Move(temp, path, true);
     }
 }
+
+public sealed record ServerIdentity(X509Certificate2 Leaf, X509Certificate2Collection Extras);
 
 public sealed record CertificateInfo(string Host, DateTimeOffset NotAfter, IReadOnlyList<string> Names);
 
