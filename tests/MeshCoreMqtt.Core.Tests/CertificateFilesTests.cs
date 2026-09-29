@@ -39,6 +39,31 @@ public class CertificateFilesTests
     }
 
     [Fact]
+    public void Reissue_for_ip_keeps_ca_and_adds_the_address_as_dns_name()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "meshcore-certs-" + Guid.NewGuid().ToString("n"));
+        try
+        {
+            CertificateFiles.Ensure(directory, "mqtt.example");
+            var firstCa = File.ReadAllText(Path.Combine(directory, "ca.crt"));
+
+            CertificateFiles.Reissue(directory, "10.18.2.107");
+
+            Assert.Equal(firstCa, File.ReadAllText(Path.Combine(directory, "ca.crt")));
+            using var certificate = X509Certificate2.CreateFromPem(File.ReadAllText(Path.Combine(directory, "server.crt")));
+            var san = certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single();
+            Assert.Contains("10.18.2.107", san.EnumerateDnsNames());
+            Assert.Contains(IPAddress.Parse("10.18.2.107"), san.EnumerateIPAddresses());
+            Assert.Equal("10.18.2.107", CertificateFiles.Describe(directory).Host);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public void ImportServerKey_replaces_key_and_keeps_ca()
     {
         var directory = Path.Combine(Path.GetTempPath(), "meshcore-certs-" + Guid.NewGuid().ToString("n"));

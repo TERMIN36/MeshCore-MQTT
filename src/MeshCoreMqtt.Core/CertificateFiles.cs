@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -249,7 +250,12 @@ public static class CertificateFiles
         var serverRequest = new CertificateRequest(Subject(host), serverKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
         if (IPAddress.TryParse(host, out var ip))
+        {
             san.AddIpAddress(ip);
+            // Репитер сверяет адрес как DNS-имя, даже когда в настройках указан IP.
+            if (ip.AddressFamily == AddressFamily.InterNetwork)
+                san.AddDnsName(host);
+        }
         else
             san.AddDnsName(host);
         if (!host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
