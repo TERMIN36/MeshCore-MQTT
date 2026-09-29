@@ -14,6 +14,7 @@ services:
       retries: 20
 
   api:
+    image: ghcr.io/termin36/meshcore-mqtt-api:latest
     build:
       context: .
       dockerfile: docker/api.Dockerfile
@@ -38,6 +39,7 @@ services:
         condition: service_healthy
 
   proxy:
+    image: ghcr.io/termin36/meshcore-mqtt-proxy:latest
     build:
       context: .
       dockerfile: docker/proxy.Dockerfile
@@ -68,6 +70,7 @@ services:
     restart: unless-stopped
 
   web:
+    image: ghcr.io/termin36/meshcore-mqtt-web:latest
     build:
       context: .
       dockerfile: docker/web.Dockerfile
