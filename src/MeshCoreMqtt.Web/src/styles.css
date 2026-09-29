@@ -441,6 +441,87 @@ label input, label select { color: var(--text); font-size: 14px; }
 .modal-card label { margin: 0; }
 .modal-card .row { justify-content: flex-end; }
 
+.modal-card.guide {
+  width: min(760px, 100%);
+  max-height: min(880px, calc(100vh - 32px));
+  overflow: auto;
+  gap: 16px;
+}
+
+.guide-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: -16px;
+  z-index: 1;
+  margin: -16px -16px 0;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.guide-head h2 { font-size: 18px; }
+.guide-head p { margin-top: 6px; font-size: 13px; }
+.guide-head button { flex: none; }
+
+.guide-steps {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.guide-step {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.guide-step:first-child { border-top: 0; padding-top: 0; }
+
+.guide-step h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.guide-step h3::before {
+  counter-increment: step;
+  content: counter(step) ". ";
+  color: var(--accent);
+}
+
+.guide-step p { color: var(--muted); font-size: 13px; }
+.guide-step p + p { margin-top: 8px; }
+
+.guide-art {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-2);
+}
+
+.guide-art svg { display: block; width: 100%; height: auto; }
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .guide-step { grid-template-columns: 1fr; }
+  .guide-head { flex-wrap: wrap; }
+}
+
 .tree-scroll .composer {
   margin: 0 0 6px 8px;
   flex-wrap: wrap;

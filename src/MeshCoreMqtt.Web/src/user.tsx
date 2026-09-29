@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState, type FormEvent } from "react";
 import { api, privilegeLabel } from "./api";
+import { SetupHint } from "./setup-guide";
 
 type TunnelMark = { spaceId: string; name: string; privileges: string[] };
 type SpaceChoice = { id: string; name: string; privileges: string[] };
@@ -543,6 +544,7 @@ function ConfigCard({ login }: { login: { name: string; config: string } }) {
           setDone(true);
           window.setTimeout(() => setDone(false), 1200);
         }}>{done ? "Скопировано" : "Копировать настройку"}</button>
+        <SetupHint />
       </div>
     </div>
   );
@@ -587,6 +589,7 @@ function DeviceForm({ spaceId, privileges, onCreated, onError }: { spaceId: stri
         <input placeholder="Имя репитера" value={name} onChange={(e) => setName(e.target.value)} required />
         <button type="submit">Добавить</button>
       </div>
+      <SetupHint />
       {limited && (
         <div className="row">
           {canChooseSubscribe && <label className="check"><input type="checkbox" checked={canSubscribe} onChange={(e) => setCanSubscribe(e.target.checked)} />Чтение</label>}
