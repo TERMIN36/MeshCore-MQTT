@@ -240,7 +240,7 @@ public sealed class StatsCollector(
                         topic.Contains("$SYS/", StringComparison.Ordinal) &&
                         int.TryParse(Encoding.UTF8.GetString(args.ApplicationMessage.PayloadSegment), out var connections))
                         stats.SetConnections(nodeId, connections);
-                    stats.RecordMessage(nodeId, topic);
+                    stats.RecordMessage(nodeId, topic, args.ApplicationMessage.PayloadSegment);
                     return Task.CompletedTask;
                 };
 

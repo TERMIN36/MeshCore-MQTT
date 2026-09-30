@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using MeshCoreMqtt.Api.Data;
+using MeshCoreMqtt.Core;
 using Microsoft.AspNetCore.Identity;
 
 namespace MeshCoreMqtt.Api.Services;
@@ -178,12 +179,25 @@ public sealed class StatsStore
 {
     readonly Dictionary<Guid, NodeRuntime> _nodes = new();
     readonly Dictionary<(Guid NodeId, string Topic), TopicRuntime> _topics = new();
+    readonly Dictionary<(Guid NodeId, string PublicKey), RepeaterState> _repeaters = new();
+    readonly Dictionary<Guid, Queue<FeedRow>> _feed = new();
 
-    public void RecordMessage(Guid nodeId, string topic)
+    public void RecordMessage(Guid nodeId, string topic, ReadOnlySpan<byte> payload)
     {
         if (topic.StartsWith("$SYS/", StringComparison.Ordinal))
             return;
+        BridgeMessage? parsed = null;
+        string summary = "";
+        if (payload.Length is > 0 and <= BridgeFrames.MaxBytes && BridgeFrames.TryDecode(payload, out var message))
+        {
+            parsed = message;
+            summary = BridgeFrames.Describe(message);
+        }
+        else if (payload.Length > 0)
+            summary = "конверт не разобран";
+
         var now = Now();
+        var seen = DateTime.UtcNow;
         lock (_nodes)
         {
             Node(nodeId).Messages.Hit(now);
@@ -197,6 +211,10 @@ public sealed class StatsStore
             }
 
             runtime.Messages.Hit(now);
+            if (parsed is not null)
+                Remember(nodeId, topic, parsed, seen);
+            if (summary.Length > 0)
+                RememberFeed(nodeId, topic, parsed, summary, seen);
         }
     }
 
@@ -251,6 +269,93 @@ public sealed class StatsStore
         }
     }
 
+    public IReadOnlyList<RepeaterLive> Repeaters()
+    {
+        lock (_nodes)
+            return _repeaters.Values.Select(state => state.View()).ToList();
+    }
+
+    public IReadOnlyList<FeedRow> Feed()
+    {
+        lock (_nodes)
+            return _feed.SelectMany(pair => pair.Value).ToList();
+    }
+
+    void Remember(Guid nodeId, string topic, BridgeMessage message, DateTime seen)
+    {
+        if (_repeaters.Count >= 2000 && !_repeaters.ContainsKey((nodeId, message.PublicKey)))
+            return;
+        if (!_repeaters.TryGetValue((nodeId, message.PublicKey), out var state))
+        {
+            state = new RepeaterState();
+            _repeaters[(nodeId, message.PublicKey)] = state;
+        }
+
+        state.NodeId = nodeId;
+        state.Topic = topic;
+        state.PublicKey = message.PublicKey;
+        if (message.Name.Length > 0)
+            state.Name = message.Name;
+        state.LastSeen = seen;
+        if (message.HasTime)
+            state.Clock = DateTimeOffset.FromUnixTimeSeconds(message.UnixTime).UtcDateTime;
+        if (message.Hello is { } hello)
+        {
+            state.FrequencyHz = hello.FrequencyHz;
+            state.BandwidthHz = hello.BandwidthHz;
+            state.SpreadingFactor = hello.SpreadingFactor;
+            state.CodingRate = hello.CodingRate;
+            state.TxDbm = hello.TxDbm;
+            state.AntennaCm = hello.AntennaCm;
+            state.Forwarding = hello.Forwarding;
+            state.HelloLatitude = hello.Latitude;
+            state.HelloLongitude = hello.Longitude;
+            state.PacketsPublished = hello.PacketsPublished;
+            state.PacketsInbound = hello.PacketsInbound;
+            state.Duplicates = hello.Duplicates;
+            state.PublishErrors = hello.PublishErrors;
+        }
+
+        if (message.Heartbeat is { } beat)
+        {
+            state.PacketsPublished = beat.PacketsPublished;
+            state.PacketsInbound = beat.PacketsInbound;
+            state.Duplicates = beat.Duplicates;
+            state.PublishErrors = beat.PublishErrors;
+        }
+
+        if (message.Packet?.Advert is { } advert &&
+            string.Equals(advert.PublicKey, message.PublicKey, StringComparison.OrdinalIgnoreCase))
+        {
+            state.AdvertType = advert.Type;
+            state.AdvertName = advert.Name;
+            state.AdvertLatitude = advert.Latitude;
+            state.AdvertLongitude = advert.Longitude;
+            state.AdvertAt = advert.Timestamp == 0
+                ? seen
+                : DateTimeOffset.FromUnixTimeSeconds(advert.Timestamp).UtcDateTime;
+        }
+    }
+
+    void RememberFeed(Guid nodeId, string topic, BridgeMessage? message, string summary, DateTime seen)
+    {
+        if (!_feed.TryGetValue(nodeId, out var queue))
+        {
+            queue = new Queue<FeedRow>();
+            _feed[nodeId] = queue;
+        }
+
+        queue.Enqueue(new FeedRow(
+            nodeId,
+            topic,
+            seen,
+            message?.PublicKey ?? "",
+            message?.Name ?? "",
+            summary));
+        while (queue.Count > 80)
+            queue.Dequeue();
+    }
+
     NodeRuntime Node(Guid nodeId)
     {
         if (!_nodes.TryGetValue(nodeId, out var node))
@@ -266,3 +371,87 @@ public sealed class StatsStore
 }
 
 public sealed record TopicRow(Guid NodeId, string Topic, int MessagesPerMinute, DateTime LastSeen);
+
+public sealed record FeedRow(Guid NodeId, string Topic, DateTime Seen, string PublicKey, string Name, string Summary);
+
+public sealed class RepeaterState
+{
+    public Guid NodeId { get; set; }
+    public string Topic { get; set; } = "";
+    public string PublicKey { get; set; } = "";
+    public string Name { get; set; } = "";
+    public DateTime LastSeen { get; set; }
+    public DateTime? Clock { get; set; }
+    public int? AdvertType { get; set; }
+    public string? AdvertName { get; set; }
+    public double? AdvertLatitude { get; set; }
+    public double? AdvertLongitude { get; set; }
+    public DateTime? AdvertAt { get; set; }
+    public uint? FrequencyHz { get; set; }
+    public uint? BandwidthHz { get; set; }
+    public byte? SpreadingFactor { get; set; }
+    public byte? CodingRate { get; set; }
+    public int? TxDbm { get; set; }
+    public int? AntennaCm { get; set; }
+    public bool? Forwarding { get; set; }
+    public double? HelloLatitude { get; set; }
+    public double? HelloLongitude { get; set; }
+    public uint? PacketsPublished { get; set; }
+    public uint? PacketsInbound { get; set; }
+    public uint? Duplicates { get; set; }
+    public uint? PublishErrors { get; set; }
+
+    public RepeaterLive View()
+    {
+        var fromAdvert = AdvertLatitude is not null && AdvertLongitude is not null;
+        return new RepeaterLive(
+            NodeId,
+            Topic,
+            PublicKey,
+            Name,
+            LastSeen,
+            Clock,
+            fromAdvert ? AdvertLatitude : HelloLatitude,
+            fromAdvert ? AdvertLongitude : HelloLongitude,
+            fromAdvert,
+            AdvertType,
+            AdvertName,
+            AdvertAt,
+            FrequencyHz,
+            BandwidthHz,
+            SpreadingFactor,
+            CodingRate,
+            TxDbm,
+            AntennaCm,
+            Forwarding,
+            PacketsPublished,
+            PacketsInbound,
+            Duplicates,
+            PublishErrors);
+    }
+}
+
+public sealed record RepeaterLive(
+    Guid NodeId,
+    string Topic,
+    string PublicKey,
+    string Name,
+    DateTime LastSeen,
+    DateTime? Clock,
+    double? Latitude,
+    double? Longitude,
+    bool LocationFromAdvert,
+    int? AdvertType,
+    string? AdvertName,
+    DateTime? AdvertAt,
+    uint? FrequencyHz,
+    uint? BandwidthHz,
+    byte? SpreadingFactor,
+    byte? CodingRate,
+    int? TxDbm,
+    int? AntennaCm,
+    bool? Forwarding,
+    uint? PacketsPublished,
+    uint? PacketsInbound,
+    uint? Duplicates,
+    uint? PublishErrors);

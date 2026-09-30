@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, privilegeLabel } from "./api";
 import { SetupHint } from "./setup-guide";
 
@@ -6,10 +6,34 @@ type TunnelMark = { spaceId: string; name: string; privileges: string[] };
 type SpaceChoice = { id: string; name: string; privileges: string[] };
 type Grant = { id: string; email: string; name: string; tunnels: TunnelMark[] };
 type Role = { id: string; name: string; privileges: string[] };
-type Device = { id: string; name: string; createdAt?: string };
+type Live = {
+  publicKey: string;
+  name: string;
+  lastSeen: string;
+  clock?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  locationFromAdvert?: boolean;
+  advertType?: number | null;
+  advertName?: string | null;
+  advertAt?: string | null;
+  frequencyHz?: number | null;
+  bandwidthHz?: number | null;
+  spreadingFactor?: number | null;
+  codingRate?: number | null;
+  txDbm?: number | null;
+  antennaCm?: number | null;
+  forwarding?: boolean | null;
+  packetsPublished?: number | null;
+  packetsInbound?: number | null;
+  duplicates?: number | null;
+  publishErrors?: number | null;
+};
+type Device = { id: string; name: string; createdAt?: string; live?: Live | null };
 type Activity = { topic: string; messagesPerMinute: number; lastSeen: string };
+type FeedItem = { topic: string; seen: string; publicKey: string; name: string; summary: string };
 type Login = { id: string; name: string; config: string };
-type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[] };
+type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[]; feed?: FeedItem[]; nodes?: Live[] };
 type GroupNode = { id: string; name: string; owner: string; ownerEmail: string; createdAt: string; mine: boolean; privileges: string[]; spaces: SpaceNode[]; spaceChoices: SpaceChoice[]; grants: Grant[] };
 
 const EMPTY = "—";
@@ -31,6 +55,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   const [groupId, setGroupId] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [nodeKey, setNodeKey] = useState<string | null>(null);
   const [secrets, setSecrets] = useState<Record<string, Login>>({});
   const [name, setName] = useState("");
   const [addingGroup, setAddingGroup] = useState(false);
@@ -52,7 +77,13 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
     const device = wantedDevice ? space?.devices.find((item) => item.id === wantedDevice) ?? null : null;
     setDeviceId(device?.id ?? null);
   }
+  const loadRef = useRef(load);
+  loadRef.current = load;
   useEffect(() => { load().catch((err) => setError(err.message)); }, []);
+  useEffect(() => {
+    const timer = window.setInterval(() => { loadRef.current().catch(() => undefined); }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function openSpace(nextGroupId: string, nextSpaceId: string) {
     const group = groups.find((item) => item.id === nextGroupId);
@@ -60,6 +91,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
     setGroupId(nextGroupId);
     setSpaceId(nextSpaceId);
     setDeviceId(space?.devices[0]?.id ?? null);
+    setNodeKey(null);
     setRenaming(false);
     setAddingDevice(false);
     setMessages(false);
@@ -70,6 +102,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
     setGroupId(id);
     setSpaceId(null);
     setDeviceId(null);
+    setNodeKey(null);
     setRenaming(false);
     setAddingDevice(false);
     setMessages(false);
@@ -92,6 +125,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   const group = groups.find((item) => item.id === groupId) ?? null;
   const space = group?.spaces.find((item) => item.id === spaceId) ?? null;
   const device = space?.devices.find((item) => item.id === deviceId) ?? null;
+  const heard = nodeKey ? (space?.nodes ?? []).find((node) => node.publicKey === nodeKey) ?? null : null;
   const secret = device ? secrets[device.id] : undefined;
   const canManageSpace = !!space?.privileges.includes("access");
 
@@ -197,39 +231,48 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                 {messages && space.privileges.includes("view") && (
                   <div className="drawer">
                     <h2>Сообщения</h2>
-                    <ActivityTable rows={space.activity} />
+                    <MessageFeed rows={space.feed ?? []} />
                   </div>
                 )}
                 <section className="sheet repeater-board">
                   <h2>Репитеры</h2>
-                  {space.privileges.includes("credentials") && space.devices.length === 0 && (
+                  {space.privileges.includes("credentials") && space.devices.length === 0 && (space.nodes ?? []).length === 0 && (
                     <p className="muted">В этом тунеле репитеров ещё нет. «Добавить репитер» выдаст строку настройки.</p>
                   )}
-                  {space.devices.length > 0 && (
+                  {(space.devices.length > 0 || (space.nodes ?? []).length > 0) && (
                     <div className="repeater-grid">
                       {space.devices.map((item) => (
                         <button
                           key={item.id}
                           type="button"
-                          className={item.id === device?.id ? "repeater selected" : "repeater"}
-                          onClick={() => setDeviceId(item.id)}
+                          className={item.id === device?.id && !nodeKey ? "repeater selected" : "repeater"}
+                          onClick={() => { setNodeKey(null); setDeviceId(item.id); }}
                         >
-                          <span className="repeater-top">
-                            <strong>{item.name}</strong>
-                            <span className="muted">Нет объявления</span>
-                          </span>
-                          <span className="muted">Координат в объявлении нет</span>
-                          <span className="muted">{item.createdAt ? `создан ${new Date(item.createdAt).toLocaleString()}` : "батарея неизвестна"}</span>
+                          <RepeaterFace name={item.name} live={item.live} createdAt={item.createdAt} />
+                        </button>
+                      ))}
+                      {(space.nodes ?? []).filter((node) => !space.devices.some((item) => item.live?.publicKey === node.publicKey)).map((node) => (
+                        <button
+                          key={node.publicKey}
+                          type="button"
+                          className={node.publicKey === nodeKey ? "repeater selected" : "repeater"}
+                          onClick={() => setNodeKey(node.publicKey)}
+                        >
+                          <RepeaterFace name={node.advertName || node.name || shortKey(node.publicKey)} live={node} />
                         </button>
                       ))}
                     </div>
                   )}
                 </section>
-                {device && space.privileges.includes("credentials") && (
+                {heard && space.privileges.includes("view") && (
+                  <RepeaterSheet title={heard.advertName || heard.name || shortKey(heard.publicKey)} live={heard} />
+                )}
+                {!nodeKey && device && (space.privileges.includes("credentials") || space.privileges.includes("view")) && (
                   <RepeaterSheet
-                    device={device}
-                    secret={secret}
-                    onDelete={async () => {
+                    title={device.name}
+                    live={device.live}
+                    secret={space.privileges.includes("credentials") ? secret : undefined}
+                    onDelete={space.privileges.includes("credentials") ? async () => {
                       try {
                         await api(`/api/devices/${device.id}`, { method: "DELETE" });
                         setSecrets((current) => {
@@ -453,63 +496,88 @@ function GroupRename({ group, onChanged, onCancel, onError }: { group: GroupNode
   );
 }
 
-function RepeaterSheet({ device, secret, onDelete }: {
-  device: Device;
+function RepeaterFace({ name, live, createdAt }: { name: string; live?: Live | null; createdAt?: string }) {
+  const coords = place(live?.latitude, live?.longitude);
+  const advert = live?.advertType != null
+    ? `${advertLabel(live.advertType)}${live.advertName ? ` «${live.advertName}»` : ""}`
+    : null;
+  return (
+    <>
+      <span className="repeater-top">
+        <strong>{name}</strong>
+        <span className="muted">{advert ?? (live ? "На связи" : "Нет объявления")}</span>
+      </span>
+      <span className="muted">{coords ? `${live?.locationFromAdvert ? "объявление" : "координаты"} ${coords}` : "Координат нет"}</span>
+      <span className="muted">{live ? `на связи ${new Date(live.lastSeen).toLocaleString()}` : createdAt ? `создан ${new Date(createdAt).toLocaleString()}` : "батарея неизвестна"}</span>
+    </>
+  );
+}
+
+function RepeaterSheet({ title, live, secret, onDelete }: {
+  title: string;
+  live?: Live | null;
   secret?: Login;
-  onDelete: () => Promise<void>;
+  onDelete?: () => Promise<void>;
 }) {
   const [confirm, setConfirm] = useState(false);
+  const coords = place(live?.latitude, live?.longitude);
+  const advert = live?.advertType != null ? `${advertLabel(live.advertType)} (${live.advertType})` : EMPTY;
   return (
     <article className="sheet">
       <div className="sheet-head">
         <div>
-          <h2>{device.name}</h2>
-          <p className="muted">Нет объявления · статистика ещё не приходила</p>
+          <h2>{live?.advertName || live?.name || title}</h2>
+          <p className="muted">{live ? `на связи ${new Date(live.lastSeen).toLocaleString()}${live.clock ? ` · часы ${new Date(live.clock).toLocaleString()}` : ""}` : "Нет объявления · статистика ещё не приходила"}</p>
         </div>
-        <div className="row actions">
-          <button type="button" className="ghost danger" onClick={() => setConfirm(true)}>Удалить репитер</button>
-        </div>
+        {onDelete && (
+          <div className="row actions">
+            <button type="button" className="ghost danger" onClick={() => setConfirm(true)}>Удалить репитер</button>
+          </div>
+        )}
       </div>
       {confirm && (
         <ConfirmDialog
           title="Удалить репитер"
-          text={`Репитер «${device.name}» будет удалён и отключится от тунеля.`}
+          text={`Репитер «${title}» будет удалён и отключится от тунеля.`}
           confirmLabel="Удалить"
           onClose={() => setConfirm(false)}
           onConfirm={async () => {
-            await onDelete();
+            await onDelete?.();
             setConfirm(false);
           }}
         />
       )}
       {secret && <ConfigCard login={secret} />}
-      {!secret && <p className="muted">Строка настройки показывается один раз, сразу после добавления репитера.</p>}
+      {!secret && onDelete && <p className="muted">Строка настройки показывается один раз, сразу после добавления репитера.</p>}
       <div className="stats">
-        <Stat label="Координаты объявления" value="нет" />
+        <Stat label={live?.locationFromAdvert ? "Координаты объявления" : "Координаты"} value={coords ?? "нет"} />
         <Stat label="Батарея" value={EMPTY} />
         <Stat label="Шум, дБм" value={EMPTY} />
         <Stat label="Эфир" value={EMPTY} />
       </div>
       <h2>Объявление</h2>
       <Fields rows={[
-        ["Тип", "репитер (2)"],
-        ["Имя", device.name],
-        ["Публичный ключ", EMPTY],
-        ["Широта", "0"],
-        ["Долгота", "0"],
-        ["Последнее объявление", EMPTY]
+        ["Тип", advert],
+        ["Имя", live?.advertName || live?.name || title],
+        ["Публичный ключ", live?.publicKey || EMPTY],
+        ["Широта", live?.latitude == null ? EMPTY : live.latitude.toFixed(6)],
+        ["Долгота", live?.longitude == null ? EMPTY : live.longitude.toFixed(6)],
+        ["Последнее объявление", live?.advertAt ? new Date(live.advertAt).toLocaleString() : EMPTY]
       ]} />
       <h2>Радио и статистика</h2>
       <Fields rows={[
-        ["Частота", EMPTY],
-        ["Полоса", EMPTY],
-        ["Spreading factor", EMPTY],
-        ["Coding rate", EMPTY],
-        ["Мощность", EMPTY],
+        ["Частота", mhz(live?.frequencyHz)],
+        ["Полоса", khz(live?.bandwidthHz)],
+        ["Spreading factor", live?.spreadingFactor == null ? EMPTY : String(live.spreadingFactor)],
+        ["Coding rate", live?.codingRate == null ? EMPTY : String(live.codingRate)],
+        ["Мощность", live?.txDbm == null ? EMPTY : `${live.txDbm} дБм`],
+        ["Антенна", live?.antennaCm == null ? EMPTY : `${(live.antennaCm / 100).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} м`],
+        ["Пересылка", live?.forwarding == null ? EMPTY : live.forwarding ? "включена" : "выключена"],
         ["Очередь передачи", EMPTY],
         ["Аптайм", EMPTY],
         ["Прошивка", EMPTY],
-        ["Принято / отправлено", EMPTY]
+        ["Принято / отдано", live?.packetsInbound == null && live?.packetsPublished == null ? EMPTY : `${live?.packetsInbound ?? 0} / ${live?.packetsPublished ?? 0}`],
+        ["Дубли / ошибки публикации", live?.duplicates == null && live?.publishErrors == null ? EMPTY : `${live?.duplicates ?? 0} / ${live?.publishErrors ?? 0}`]
       ]} />
     </article>
   );
@@ -550,18 +618,47 @@ function ConfigCard({ login }: { login: { name: string; config: string } }) {
   );
 }
 
-function ActivityTable({ rows }: { rows: Activity[] }) {
-  if (!rows?.length) return <p className="muted">Сообщений пока нет. Они появятся, когда репитер выйдет на связь.</p>;
+function MessageFeed({ rows }: { rows: FeedItem[] }) {
+  if (!rows.length) return <p className="muted">Сообщений пока нет. Они появятся, когда репитер выйдет на связь.</p>;
   return (
     <table>
-      <thead><tr><th>Публичный ключ</th><th>В минуту</th><th>Последнее</th></tr></thead>
+      <thead><tr><th>Время</th><th>Репитер</th><th>Ключ</th><th>Сообщение</th></tr></thead>
       <tbody>
-        {rows.map((row) => (
-          <tr key={row.topic}><td>{row.topic}</td><td>{row.messagesPerMinute}</td><td>{new Date(row.lastSeen).toLocaleString()}</td></tr>
+        {rows.map((row, index) => (
+          <tr key={`${row.seen}-${row.publicKey}-${index}`}>
+            <td>{new Date(row.seen).toLocaleString()}</td>
+            <td>{row.name || EMPTY}</td>
+            <td title={row.publicKey}>{shortKey(row.publicKey)}</td>
+            <td>{row.summary}</td>
+          </tr>
         ))}
       </tbody>
     </table>
   );
+}
+
+function advertLabel(type: number) {
+  return ["узел", "чат", "репитер", "комната", "датчик"][type] ?? String(type);
+}
+
+function place(latitude?: number | null, longitude?: number | null) {
+  if (latitude == null || longitude == null) return null;
+  return `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+}
+
+function mhz(hz?: number | null) {
+  if (hz == null) return EMPTY;
+  return `${(hz / 1e6).toLocaleString("ru-RU", { maximumFractionDigits: 3 })} МГц`;
+}
+
+function khz(hz?: number | null) {
+  if (hz == null) return EMPTY;
+  return `${(hz / 1e3).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} кГц`;
+}
+
+function shortKey(key: string) {
+  if (key.length < 12) return key || EMPTY;
+  return `${key.slice(0, 8)}…${key.slice(-4)}`;
 }
 
 function DeviceForm({ spaceId, privileges, onCreated, onError }: { spaceId: string; privileges: string[]; onCreated: (value: Login) => Promise<void>; onError: (value: string) => void }) {

@@ -103,22 +103,18 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 spaces = visible.Select(space =>
                 {
                     var privileges = PrivilegesOn(group, userId, mine, space.Id);
+                    var heard = privileges.HasFlag(Privilege.View) ? NodesFor(space) : [];
                     return new
                     {
                         id = space.Id,
                         name = space.Name,
                         privileges = PrivilegeText.ToNames(privileges),
                         devices = privileges.HasFlag(Privilege.Credentials)
-                            ? space.Devices.OrderBy(d => d.CreatedAt).Select(d => (object)new
-                            {
-                                id = d.Id,
-                                name = d.DisplayName,
-                                canSubscribe = d.CanSubscribe,
-                                canPublish = d.CanPublish,
-                                createdAt = d.CreatedAt
-                            })
+                            ? space.Devices.OrderBy(d => d.CreatedAt).Select(d => DeviceView(d, heard, space.Devices.Count))
                             : Array.Empty<object>(),
-                        activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>()
+                        activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>(),
+                        feed = privileges.HasFlag(Privilege.View) ? FeedFor(space) : Array.Empty<object>(),
+                        nodes = heard.Select(LiveObject)
                     };
                 }),
                 spaceChoices = showGroupGrants
@@ -232,16 +228,11 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
             privileges = PrivilegeText.ToNames(privileges),
             connection = new { host = secrets.Value.PublicHost, port = secrets.Value.PublicPort, tls = true },
             devices = privileges.HasFlag(Privilege.Credentials)
-                ? space.Devices.OrderBy(d => d.CreatedAt).Select(d => (object)new
-                {
-                    id = d.Id,
-                    name = d.DisplayName,
-                    canSubscribe = d.CanSubscribe,
-                    canPublish = d.CanPublish,
-                    createdAt = d.CreatedAt
-                })
+                ? space.Devices.OrderBy(d => d.CreatedAt).Select(d => DeviceView(d, privileges.HasFlag(Privilege.View) ? NodesFor(space) : [], space.Devices.Count))
                 : Array.Empty<object>(),
-            activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>()
+            activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>(),
+            feed = privileges.HasFlag(Privilege.View) ? FeedFor(space) : Array.Empty<object>(),
+            nodes = privileges.HasFlag(Privilege.View) ? NodesFor(space).Select(LiveObject) : Array.Empty<object>()
         };
     }
 
@@ -493,6 +484,82 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
             .OrderByDescending(row => row.MessagesPerMinute)
             .Select(row => new { topic = MeshTopics.Tail(space.Id, row.Topic), messagesPerMinute = row.MessagesPerMinute, lastSeen = row.LastSeen });
     }
+
+    IEnumerable<object> FeedFor(Space space)
+    {
+        var filter = MeshTopics.Filter(space.Id);
+        return stats.Feed()
+            .Where(row => row.NodeId == space.BrokerNodeId && TopicRules.AllowsPublish([filter], row.Topic))
+            .OrderByDescending(row => row.Seen)
+            .Take(80)
+            .Select(row => new
+            {
+                topic = MeshTopics.Tail(space.Id, row.Topic),
+                seen = row.Seen,
+                publicKey = row.PublicKey,
+                name = row.Name,
+                summary = row.Summary
+            });
+    }
+
+    List<RepeaterLive> NodesFor(Space space)
+    {
+        var filter = MeshTopics.Filter(space.Id);
+        return stats.Repeaters()
+            .Where(row => row.NodeId == space.BrokerNodeId && TopicRules.AllowsPublish([filter], row.Topic))
+            .OrderByDescending(row => row.LastSeen)
+            .ToList();
+    }
+
+    static object DeviceView(DeviceLogin device, IReadOnlyList<RepeaterLive> heard, int deviceCount)
+    {
+        var live = Match(device.DisplayName, heard, deviceCount);
+        return new
+        {
+            id = device.Id,
+            name = device.DisplayName,
+            canSubscribe = device.CanSubscribe,
+            canPublish = device.CanPublish,
+            createdAt = device.CreatedAt,
+            live = live is null ? null : LiveObject(live)
+        };
+    }
+
+    static RepeaterLive? Match(string name, IReadOnlyList<RepeaterLive> heard, int deviceCount)
+    {
+        var named = heard
+            .Where(node => node.Name.Length > 0 && string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(node => node.LastSeen)
+            .FirstOrDefault();
+        if (named is not null)
+            return named;
+        return deviceCount == 1 && heard.Count == 1 ? heard[0] : null;
+    }
+
+    static object LiveObject(RepeaterLive live) => new
+    {
+        publicKey = live.PublicKey,
+        name = live.Name,
+        lastSeen = live.LastSeen,
+        clock = live.Clock,
+        latitude = live.Latitude,
+        longitude = live.Longitude,
+        locationFromAdvert = live.LocationFromAdvert,
+        advertType = live.AdvertType,
+        advertName = live.AdvertName,
+        advertAt = live.AdvertAt,
+        frequencyHz = live.FrequencyHz,
+        bandwidthHz = live.BandwidthHz,
+        spreadingFactor = live.SpreadingFactor,
+        codingRate = live.CodingRate,
+        txDbm = live.TxDbm,
+        antennaCm = live.AntennaCm,
+        forwarding = live.Forwarding,
+        packetsPublished = live.PacketsPublished,
+        packetsInbound = live.PacketsInbound,
+        duplicates = live.Duplicates,
+        publishErrors = live.PublishErrors
+    };
 
     async Task<Group> LoadGroup(Guid id, CancellationToken ct) =>
         await db.Groups.Include(g => g.Owner).FirstOrDefaultAsync(g => g.Id == id, ct)
