@@ -107,12 +107,17 @@ public class BridgeFramesTests
         PutU32(old, 0);
         PutU32(old, 0);
         PutU32(old, 0);
-        Assert.False(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, old), out _));
+        Assert.True(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, old), out var bare));
+        Assert.Equal("N", bare.Name);
+        Assert.Null(bare.Hello);
+        Assert.Equal("приветствие", BridgeFrames.Describe(bare));
 
         var extra = new List<byte>(old);
         PutTelemetry(extra, -90, 1, 2, 3, 4, 0, 0, "a");
         extra.Add(0xFF);
-        Assert.False(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, extra), out _));
+        Assert.True(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, extra), out var kept));
+        Assert.Equal("a", kept.Hello!.Firmware);
+        Assert.Equal(1u, kept.Hello.TxAirSecs);
     }
 
     [Fact]
@@ -162,12 +167,16 @@ public class BridgeFramesTests
         PutU32(old, 1);
         PutU32(old, 0);
         Assert.Equal(20, old.Count);
-        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, old), out _));
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, old), out var headerOnly));
+        Assert.Equal("R", headerOnly.Name);
+        Assert.Null(headerOnly.Heartbeat);
+        Assert.Equal("пульс", BridgeFrames.Describe(headerOnly));
 
         var shortOfMinimum = new List<byte>(old);
         PutTelemetry(shortOfMinimum, -100, 1, 1, 1, 1, 0, 0, "");
         Assert.Equal(43, shortOfMinimum.Count);
-        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, shortOfMinimum), out _));
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, shortOfMinimum), out var unfinished));
+        Assert.Null(unfinished.Heartbeat);
 
         var minimum = new List<byte>(old);
         PutTelemetry(minimum, -100, 1, 1, 1, 1, 0, BridgeFrames.TemperatureMissing, "");
@@ -183,12 +192,14 @@ public class BridgeFramesTests
         Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 2, null, exact), out _));
 
         var trailing = new List<byte>(exact) { 0 };
-        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 3, null, trailing), out _));
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 3, null, trailing), out var trailed));
+        Assert.Equal("v", trailed.Heartbeat!.Firmware);
 
         var missingCoords = new List<byte>(old);
         PutTelemetry(missingCoords, -100, 1, 1, 1, 1, 0, 0, "v");
         missingCoords.Add(0x02);
-        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 4, null, missingCoords), out _));
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 4, null, missingCoords), out var unbalanced));
+        Assert.Null(unbalanced.Heartbeat);
 
         var longName = new List<byte>(old);
         PutI16(longName, -90);
@@ -199,7 +210,17 @@ public class BridgeFramesTests
         PutU16(longName, 0);
         PutI16(longName, 0);
         longName.Add(32);
-        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 5, null, longName), out _));
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 5, null, longName), out var tooLong));
+        Assert.Null(tooLong.Heartbeat);
+    }
+
+    [Fact]
+    public void Raw_mesh_packet_without_envelope_is_still_a_packet()
+    {
+        var body = new List<byte> { (byte)(1 | (2 << 2)), 0, 0x11, 0x22, 0x01, 0x02 };
+        Assert.True(BridgeFrames.TryDecode(body.ToArray(), out var message));
+        Assert.Equal(2, message.Packet!.PayloadType);
+        Assert.Equal("текст от 22 для 11, содержимое зашифровано", BridgeFrames.Describe(message));
     }
 
     [Fact]

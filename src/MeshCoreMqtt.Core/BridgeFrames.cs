@@ -5,14 +5,14 @@ namespace MeshCoreMqtt.Core;
 
 public static class BridgeFrames
 {
-    public const int MaxBytes = 360;
+    public const int MaxBytes = 2048;
     public const short TemperatureMissing = -32768;
 
     public static bool TryDecode(ReadOnlySpan<byte> data, out BridgeMessage message)
     {
         message = null!;
         if (data.Length < 1 || data[0] != 1)
-            return false;
+            return TryBarePacket(data, out message);
         var i = 1;
         if (i >= data.Length)
             return false;
@@ -23,44 +23,38 @@ public static class BridgeFrames
         i += 32;
         var nameLen = data[i++];
         if (nameLen > 31 || i + nameLen + 4 + 1 + 2 > data.Length)
-            return false;
+            return TryBarePacket(data, out message);
         var name = Encoding.UTF8.GetString(data.Slice(i, nameLen));
         i += nameLen;
         var seq = ReadU32(data.Slice(i, 4));
         i += 4;
         var timeFlag = data[i++];
         if (timeFlag > 1)
-            return false;
+            return TryBarePacket(data, out message);
         uint unix = 0;
         if (timeFlag == 1)
         {
             if (i + 4 + 2 > data.Length)
-                return false;
+                return TryBarePacket(data, out message);
             unix = ReadU32(data.Slice(i, 4));
             i += 4;
         }
 
         if (i + 2 > data.Length)
-            return false;
+            return TryBarePacket(data, out message);
         var bodyLen = ReadU16(data.Slice(i, 2));
         i += 2;
         if (i + bodyLen != data.Length)
-            return false;
+            return TryBarePacket(data, out message);
         var body = data.Slice(i, bodyLen);
 
         HelloBody? hello = null;
         HeartbeatBody? heartbeat = null;
         MeshPacket? packet = null;
         if (type == 2)
-        {
-            if (!TryHello(body, out hello))
-                return false;
-        }
+            TryHello(body, out hello);
         else if (type == 3)
-        {
-            if (!TryHeartbeat(body, out heartbeat))
-                return false;
-        }
+            TryHeartbeat(body, out heartbeat);
         else if (type == 1)
         {
             TryPacket(body, out packet);
@@ -256,21 +250,49 @@ public static class BridgeFrames
         return publisherKey.StartsWith(mark, StringComparison.OrdinalIgnoreCase);
     }
 
-    static bool TryHello(ReadOnlySpan<byte> body, out HelloBody hello)
+    static bool TryBarePacket(ReadOnlySpan<byte> data, out BridgeMessage message)
     {
-        hello = null!;
-        if (body.Length < 56)
+        message = null!;
+        if (data.Length is < 2 or > 255 || (data[0] & 0xC0) != 0)
             return false;
-        var i = 0;
-        var freq = ReadU32(body.Slice(i, 4)); i += 4;
-        var bw = ReadU32(body.Slice(i, 4)); i += 4;
-        var sf = body[i++];
-        var cr = body[i++];
-        var tx = (sbyte)body[i++];
+        var route = (byte)(data[0] & 0x03);
+        if (!TryFrame(data, route, out _, out var payload, out _) || payload.Length == 0)
+            return false;
+        if (!TryPacket(data, out var packet) || packet is not { RouteParsed: true })
+            return false;
+        message = new BridgeMessage(1, "", "", 0, false, 0, null, null, packet);
+        return true;
+    }
+
+    static bool TryRadioPrefix(
+        ReadOnlySpan<byte> body,
+        out int i,
+        out uint freq,
+        out uint bw,
+        out byte sf,
+        out byte cr,
+        out int tx,
+        out int? ant,
+        out double? lat,
+        out double? lon)
+    {
+        i = 0;
+        freq = 0;
+        bw = 0;
+        sf = 0;
+        cr = 0;
+        tx = 0;
+        ant = null;
+        lat = null;
+        lon = null;
+        if (body.Length < 12)
+            return false;
+        freq = ReadU32(body.Slice(i, 4)); i += 4;
+        bw = ReadU32(body.Slice(i, 4)); i += 4;
+        sf = body[i++];
+        cr = body[i++];
+        tx = (sbyte)body[i++];
         var flags = body[i++];
-        int? ant = null;
-        double? lat = null;
-        double? lon = null;
         if ((flags & 0x01) != 0)
         {
             if (i + 2 > body.Length)
@@ -279,14 +301,20 @@ public static class BridgeFrames
             i += 2;
         }
 
-        if ((flags & 0x02) != 0)
-        {
-            if (!TryDegrees(body, ref i, out var latValue, out var lonValue))
-                return false;
-            lat = latValue;
-            lon = lonValue;
-        }
+        if ((flags & 0x02) == 0)
+            return true;
+        if (!TryDegrees(body, ref i, out var latValue, out var lonValue))
+            return false;
+        lat = latValue;
+        lon = lonValue;
+        return true;
+    }
 
+    static bool TryHello(ReadOnlySpan<byte> body, out HelloBody hello)
+    {
+        hello = null!;
+        if (!TryRadioPrefix(body, out var i, out var freq, out var bw, out var sf, out var cr, out var tx, out var ant, out var lat, out var lon))
+            return false;
         if (i + 21 > body.Length)
             return false;
         var forwarding = body[i++] != 0;
@@ -295,18 +323,21 @@ public static class BridgeFrames
         var inbound = ReadU32(body.Slice(i, 4)); i += 4;
         var dups = ReadU32(body.Slice(i, 4)); i += 4;
         var errors = ReadU32(body.Slice(i, 4)); i += 4;
-        if (!TryTelemetry(body, ref i, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var battery, out var temp, out var firmware) || i != body.Length)
+        var mark = i;
+        if (!TryTail(body, mark, true, true, false, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var batteryMv, out var temp, out var firmware, out _, out _)
+            && !TryTail(body, mark, false, true, false, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out _, out _)
+            && !TryTail(body, mark, true, false, false, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out _, out _))
             return false;
         hello = new HelloBody(
             freq, bw, sf, cr, tx, ant, lat, lon, forwarding, session, published, inbound, dups, errors,
-            noise, txAir, rxAir, uptime, queue, battery, temp, firmware);
+            noise, txAir, rxAir, uptime, queue, batteryMv, temp, firmware);
         return true;
     }
 
     static bool TryHeartbeat(ReadOnlySpan<byte> body, out HeartbeatBody beat)
     {
         beat = null!;
-        if (body.Length < 44)
+        if (body.Length < 20)
             return false;
         var i = 0;
         var session = ReadU32(body.Slice(i, 4)); i += 4;
@@ -314,30 +345,58 @@ public static class BridgeFrames
         var inbound = ReadU32(body.Slice(i, 4)); i += 4;
         var dups = ReadU32(body.Slice(i, 4)); i += 4;
         var errors = ReadU32(body.Slice(i, 4)); i += 4;
-        if (!TryTelemetry(body, ref i, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var battery, out var temp, out var firmware))
+        var mark = i;
+        if (!TryTail(body, mark, true, true, true, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var batteryMv, out var temp, out var firmware, out var lat, out var lon)
+            && !TryTail(body, mark, false, true, true, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out lat, out lon)
+            && !TryTail(body, mark, true, false, true, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out lat, out lon))
             return false;
-        if (i >= body.Length)
+        beat = new HeartbeatBody(session, published, inbound, dups, errors, noise, txAir, rxAir, uptime, queue, batteryMv, temp, firmware, lat, lon);
+        return true;
+    }
+
+    static bool TryTail(
+        ReadOnlySpan<byte> body,
+        int mark,
+        bool battery,
+        bool exact,
+        bool coords,
+        out short noise,
+        out uint txAir,
+        out uint rxAir,
+        out uint uptime,
+        out uint queue,
+        out ushort batteryMv,
+        out short temp,
+        out string firmware,
+        out double? lat,
+        out double? lon)
+    {
+        lat = null;
+        lon = null;
+        var cursor = mark;
+        if (!TryTelemetry(body, ref cursor, battery, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware))
             return false;
-        var flags = body[i++];
-        double? lat = null;
-        double? lon = null;
-        if ((flags & 0x02) != 0)
+        if (coords)
         {
-            if (!TryDegrees(body, ref i, out var latValue, out var lonValue))
+            if (cursor >= body.Length)
                 return false;
-            lat = latValue;
-            lon = lonValue;
+            var flags = body[cursor++];
+            if ((flags & 0x02) != 0)
+            {
+                if (!TryDegrees(body, ref cursor, out var latValue, out var lonValue))
+                    return false;
+                lat = latValue;
+                lon = lonValue;
+            }
         }
 
-        if (i != body.Length)
-            return false;
-        beat = new HeartbeatBody(session, published, inbound, dups, errors, noise, txAir, rxAir, uptime, queue, battery, temp, firmware, lat, lon);
-        return true;
+        return cursor <= body.Length && (!exact || cursor == body.Length);
     }
 
     static bool TryTelemetry(
         ReadOnlySpan<byte> body,
         ref int i,
+        bool battery,
         out short noise,
         out uint txAir,
         out uint rxAir,
@@ -353,17 +412,20 @@ public static class BridgeFrames
         uptime = 0;
         queue = 0;
         batteryMv = 0;
-        tempCx10 = 0;
+        tempCx10 = TemperatureMissing;
         firmware = "";
-        if (i + 23 > body.Length)
+        if (i + (battery ? 23 : 19) > body.Length)
             return false;
         noise = ReadI16(body.Slice(i, 2)); i += 2;
         txAir = ReadU32(body.Slice(i, 4)); i += 4;
         rxAir = ReadU32(body.Slice(i, 4)); i += 4;
         uptime = ReadU32(body.Slice(i, 4)); i += 4;
         queue = ReadU32(body.Slice(i, 4)); i += 4;
-        batteryMv = ReadU16(body.Slice(i, 2)); i += 2;
-        tempCx10 = ReadI16(body.Slice(i, 2)); i += 2;
+        if (battery)
+        {
+            batteryMv = ReadU16(body.Slice(i, 2)); i += 2;
+            tempCx10 = ReadI16(body.Slice(i, 2)); i += 2;
+        }
         var length = body[i++];
         if (length > 31 || i + length > body.Length)
             return false;
