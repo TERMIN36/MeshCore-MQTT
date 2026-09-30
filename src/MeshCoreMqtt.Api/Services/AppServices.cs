@@ -175,8 +175,9 @@ public sealed class TopicRuntime
     public HitWindow Messages { get; } = new();
 }
 
-public sealed class StatsStore
+public sealed class StatsStore(LiveHub live)
 {
+    readonly LiveHub _live = live;
     readonly Dictionary<Guid, NodeRuntime> _nodes = new();
     readonly Dictionary<(Guid NodeId, string Topic), TopicRuntime> _topics = new();
     readonly Dictionary<(Guid NodeId, string PublicKey), RepeaterState> _repeaters = new();
@@ -216,12 +217,15 @@ public sealed class StatsStore
             if (summary.Length > 0)
                 RememberFeed(nodeId, topic, parsed, summary, seen);
         }
+
+        _live.MarkChanged();
     }
 
     public void SetConnections(Guid nodeId, int count)
     {
         lock (_nodes)
             Node(nodeId).Connections = count;
+        _live.MarkChanged();
     }
 
     public void SetReachable(Guid nodeId, bool reachable, string? error)
@@ -232,6 +236,8 @@ public sealed class StatsStore
             node.Reachable = reachable;
             node.Error = error;
         }
+
+        _live.MarkChanged();
     }
 
     public int MessagesPerMinute(Guid nodeId)

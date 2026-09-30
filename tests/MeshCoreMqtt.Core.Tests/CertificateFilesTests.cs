@@ -64,6 +64,73 @@ public class CertificateFilesTests
     }
 
     [Fact]
+    public void Reissue_puts_comma_separated_names_into_the_certificate()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "meshcore-certs-" + Guid.NewGuid().ToString("n"));
+        try
+        {
+            CertificateFiles.Ensure(directory, "localhost");
+            var firstCa = File.ReadAllText(Path.Combine(directory, "ca.crt"));
+
+            var primary = CertificateFiles.Reissue(directory, " MQTT.Example.com, 10.18.2.107, mqtt.example.com, lan.local ");
+
+            Assert.Equal("mqtt.example.com", primary);
+            Assert.Equal(firstCa, File.ReadAllText(Path.Combine(directory, "ca.crt")));
+            Assert.Equal(["mqtt.example.com", "10.18.2.107", "lan.local"], CertificateFiles.ConfiguredHosts(directory));
+            using var certificate = X509Certificate2.CreateFromPem(File.ReadAllText(Path.Combine(directory, "server.crt")));
+            var san = certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single();
+            Assert.Contains("mqtt.example.com", san.EnumerateDnsNames());
+            Assert.Contains("lan.local", san.EnumerateDnsNames());
+            Assert.Contains("10.18.2.107", san.EnumerateDnsNames());
+            Assert.Contains("localhost", san.EnumerateDnsNames());
+            Assert.Contains(IPAddress.Parse("10.18.2.107"), san.EnumerateIPAddresses());
+            Assert.Contains(IPAddress.Loopback, san.EnumerateIPAddresses());
+            var info = CertificateFiles.Describe(directory);
+            Assert.Equal("mqtt.example.com", info.Host);
+            Assert.Equal(info.Names.Distinct(StringComparer.OrdinalIgnoreCase).Count(), info.Names.Count);
+
+            CertificateFiles.Reissue(directory, "mqtt.example.com");
+            Assert.Equal(["mqtt.example.com"], CertificateFiles.ConfiguredHosts(directory));
+            Assert.False(File.Exists(Path.Combine(directory, "public.names")));
+            Assert.Throws<CertificateException>(() => CertificateFiles.NormalizeHosts("mqtt.example, *.bad"));
+            Assert.Throws<CertificateException>(() => CertificateFiles.NormalizeHosts(" , "));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void ImportServerKey_keeps_extra_names()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "meshcore-certs-" + Guid.NewGuid().ToString("n"));
+        try
+        {
+            CertificateFiles.Ensure(directory, "mqtt.example");
+            CertificateFiles.Reissue(directory, "mqtt.example, 10.1.2.3");
+            using var imported = RSA.Create(2048);
+            var pem = new string(PemEncoding.Write("PRIVATE KEY", imported.ExportPkcs8PrivateKey()));
+
+            CertificateFiles.ImportServerKey(directory, pem);
+
+            Assert.Equal(["mqtt.example", "10.1.2.3"], CertificateFiles.ConfiguredHosts(directory));
+            using var certificate = X509Certificate2.CreateFromPem(File.ReadAllText(Path.Combine(directory, "server.crt")));
+            var san = certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single();
+            Assert.Contains("mqtt.example", san.EnumerateDnsNames());
+            Assert.Contains(IPAddress.Parse("10.1.2.3"), san.EnumerateIPAddresses());
+            using var publicKey = certificate.GetRSAPublicKey();
+            Assert.Equal(imported.ExportSubjectPublicKeyInfo(), publicKey!.ExportSubjectPublicKeyInfo());
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public void ImportServerKey_replaces_key_and_keeps_ca()
     {
         var directory = Path.Combine(Path.GetTempPath(), "meshcore-certs-" + Guid.NewGuid().ToString("n"));

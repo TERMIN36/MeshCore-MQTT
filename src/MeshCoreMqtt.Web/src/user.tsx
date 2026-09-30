@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, privilegeLabel } from "./api";
+import { subscribeLive } from "./live";
 import { SetupHint } from "./setup-guide";
 
 type TunnelMark = { spaceId: string; name: string; privileges: string[] };
@@ -33,7 +34,7 @@ type Device = { id: string; name: string; createdAt?: string; live?: Live | null
 type Activity = { topic: string; messagesPerMinute: number; lastSeen: string };
 type FeedItem = { topic: string; seen: string; publicKey: string; name: string; summary: string };
 type Login = { id: string; name: string; config: string };
-type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[]; feed?: FeedItem[]; nodes?: Live[] };
+type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[]; feed?: FeedItem[] };
 type GroupNode = { id: string; name: string; owner: string; ownerEmail: string; createdAt: string; mine: boolean; privileges: string[]; spaces: SpaceNode[]; spaceChoices: SpaceChoice[]; grants: Grant[] };
 
 const EMPTY = "—";
@@ -55,7 +56,6 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   const [groupId, setGroupId] = useState<string | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [nodeKey, setNodeKey] = useState<string | null>(null);
   const [secrets, setSecrets] = useState<Record<string, Login>>({});
   const [name, setName] = useState("");
   const [addingGroup, setAddingGroup] = useState(false);
@@ -65,25 +65,36 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   const [confirmSpace, setConfirmSpace] = useState(false);
   const [error, setError] = useState("");
 
-  async function load(nextGroupId?: string | null, nextSpaceId?: string | null, nextDeviceId?: string | null) {
-    const tree = await api<GroupNode[]>("/api/tree");
+  const groupIdRef = useRef(groupId);
+  const spaceIdRef = useRef(spaceId);
+  const deviceIdRef = useRef(deviceId);
+  groupIdRef.current = groupId;
+  spaceIdRef.current = spaceId;
+  deviceIdRef.current = deviceId;
+
+  function applyTree(tree: GroupNode[], nextGroupId?: string | null, nextSpaceId?: string | null, nextDeviceId?: string | null) {
     setGroups(tree);
-    const group = tree.find((item) => item.id === (nextGroupId === undefined ? groupId : nextGroupId)) ?? (nextGroupId ? null : tree[0]) ?? null;
+    const group = tree.find((item) => item.id === (nextGroupId === undefined ? groupIdRef.current : nextGroupId))
+      ?? (nextGroupId ? null : tree[0])
+      ?? null;
     setGroupId(group?.id ?? null);
-    const wantedSpace = nextSpaceId === undefined ? spaceId : nextSpaceId;
+    const wantedSpace = nextSpaceId === undefined ? spaceIdRef.current : nextSpaceId;
     const space = wantedSpace ? group?.spaces.find((item) => item.id === wantedSpace) ?? null : null;
     setSpaceId(space?.id ?? null);
-    const wantedDevice = nextDeviceId === undefined ? deviceId : nextDeviceId;
+    const wantedDevice = nextDeviceId === undefined ? deviceIdRef.current : nextDeviceId;
     const device = wantedDevice ? space?.devices.find((item) => item.id === wantedDevice) ?? null : null;
     setDeviceId(device?.id ?? null);
+  }
+
+  async function load(nextGroupId?: string | null, nextSpaceId?: string | null, nextDeviceId?: string | null) {
+    applyTree(await api<GroupNode[]>("/api/tree"), nextGroupId, nextSpaceId, nextDeviceId);
   }
   const loadRef = useRef(load);
   loadRef.current = load;
   useEffect(() => { load().catch((err) => setError(err.message)); }, []);
-  useEffect(() => {
-    const timer = window.setInterval(() => { loadRef.current().catch(() => undefined); }, 5000);
-    return () => window.clearInterval(timer);
-  }, []);
+  useEffect(() => subscribeLive(["tree"], {
+    onTree: (tree) => applyTree(tree as GroupNode[])
+  }), []);
 
   function openSpace(nextGroupId: string, nextSpaceId: string) {
     const group = groups.find((item) => item.id === nextGroupId);
@@ -91,7 +102,6 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
     setGroupId(nextGroupId);
     setSpaceId(nextSpaceId);
     setDeviceId(space?.devices[0]?.id ?? null);
-    setNodeKey(null);
     setRenaming(false);
     setAddingDevice(false);
     setMessages(false);
@@ -102,7 +112,6 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
     setGroupId(id);
     setSpaceId(null);
     setDeviceId(null);
-    setNodeKey(null);
     setRenaming(false);
     setAddingDevice(false);
     setMessages(false);
@@ -125,8 +134,6 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   const group = groups.find((item) => item.id === groupId) ?? null;
   const space = group?.spaces.find((item) => item.id === spaceId) ?? null;
   const device = space?.devices.find((item) => item.id === deviceId) ?? null;
-  const heard = nodeKey ? (space?.nodes ?? []).find((node) => node.publicKey === nodeKey) ?? null : null;
-  const secret = device ? secrets[device.id] : undefined;
   const canManageSpace = !!space?.privileges.includes("access");
 
   return (
@@ -236,42 +243,29 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                 )}
                 <section className="sheet repeater-board">
                   <h2>Репитеры</h2>
-                  {space.privileges.includes("credentials") && space.devices.length === 0 && (space.nodes ?? []).length === 0 && (
+                  {space.privileges.includes("credentials") && space.devices.length === 0 && (
                     <p className="muted">В этом тунеле репитеров ещё нет. «Добавить репитер» выдаст строку настройки.</p>
                   )}
-                  {(space.devices.length > 0 || (space.nodes ?? []).length > 0) && (
+                  {space.devices.length > 0 && (
                     <div className="repeater-grid">
                       {space.devices.map((item) => (
                         <button
                           key={item.id}
                           type="button"
-                          className={item.id === device?.id && !nodeKey ? "repeater selected" : "repeater"}
-                          onClick={() => { setNodeKey(null); setDeviceId(item.id); }}
+                          className={item.id === device?.id ? "repeater selected" : "repeater"}
+                          onClick={() => setDeviceId(item.id)}
                         >
                           <RepeaterFace name={item.name} live={item.live} createdAt={item.createdAt} />
-                        </button>
-                      ))}
-                      {(space.nodes ?? []).filter((node) => !space.devices.some((item) => item.live?.publicKey === node.publicKey)).map((node) => (
-                        <button
-                          key={node.publicKey}
-                          type="button"
-                          className={node.publicKey === nodeKey ? "repeater selected" : "repeater"}
-                          onClick={() => setNodeKey(node.publicKey)}
-                        >
-                          <RepeaterFace name={node.advertName || node.name || shortKey(node.publicKey)} live={node} />
                         </button>
                       ))}
                     </div>
                   )}
                 </section>
-                {heard && space.privileges.includes("view") && (
-                  <RepeaterSheet title={heard.advertName || heard.name || shortKey(heard.publicKey)} live={heard} />
-                )}
-                {!nodeKey && device && (space.privileges.includes("credentials") || space.privileges.includes("view")) && (
+                {device && (space.privileges.includes("credentials") || space.privileges.includes("view")) && (
                   <RepeaterSheet
                     title={device.name}
                     live={device.live}
-                    secret={space.privileges.includes("credentials") ? secret : undefined}
+                    secret={space.privileges.includes("credentials") ? secrets[device.id] : undefined}
                     onDelete={space.privileges.includes("credentials") ? async () => {
                       try {
                         await api(`/api/devices/${device.id}`, { method: "DELETE" });
@@ -538,7 +532,7 @@ function RepeaterSheet({ title, live, secret, onDelete }: {
       {confirm && (
         <ConfirmDialog
           title="Удалить репитер"
-          text={`Репитер «${title}» будет удалён и отключится от тунеля.`}
+          text={`Репитер «${live?.advertName || live?.name || title}» будет удалён и отключится от тунеля.`}
           confirmLabel="Удалить"
           onClose={() => setConfirm(false)}
           onConfirm={async () => {
@@ -602,9 +596,10 @@ function Fields({ rows }: { rows: [string, string][] }) {
 
 function ConfigCard({ login }: { login: { name: string; config: string } }) {
   const [done, setDone] = useState(false);
+  const titled = login.name && login.name !== "Репитер" ? ` «${login.name}»` : "";
   return (
     <div className="secret">
-      <p className="muted">Строка для веб-интерфейса репитера «{login.name}»: адрес, логин, пароль и сертификат. Вставьте её один раз — повторно пароль не показывается.</p>
+      <p className="muted">Строка для веб-интерфейса репитера{titled}: адрес, логин, пароль и сертификат. Вставьте её один раз — повторно пароль не показывается.</p>
       <pre className="cli">{login.config}</pre>
       <div className="row">
         <button type="button" onClick={async () => {
@@ -662,7 +657,6 @@ function shortKey(key: string) {
 }
 
 function DeviceForm({ spaceId, privileges, onCreated, onError }: { spaceId: string; privileges: string[]; onCreated: (value: Login) => Promise<void>; onError: (value: string) => void }) {
-  const [name, setName] = useState("");
   const canChooseSubscribe = privileges.includes("subscribe");
   const canChoosePublish = privileges.includes("publish");
   const [canSubscribe, setCanSubscribe] = useState(canChooseSubscribe);
@@ -674,16 +668,15 @@ function DeviceForm({ spaceId, privileges, onCreated, onError }: { spaceId: stri
       try {
         const created = await api<Login>(`/api/spaces/${spaceId}/devices`, {
           method: "POST",
-          body: JSON.stringify({ name, canSubscribe, canPublish })
+          body: JSON.stringify({ canSubscribe, canPublish })
         });
-        setName("");
         await onCreated(created);
       } catch (err) {
         onError(err instanceof Error ? err.message : "Не удалось выдать логин");
       }
     }}>
+      <p className="muted">Имя подставится из объявления репитера, когда он выйдет на связь.</p>
       <div className="composer">
-        <input placeholder="Имя репитера" value={name} onChange={(e) => setName(e.target.value)} required />
         <button type="submit">Добавить</button>
       </div>
       <SetupHint />

@@ -100,23 +100,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 createdAt = group.CreatedAt,
                 mine = group.OwnerUserId == userId,
                 privileges = PrivilegeText.ToNames(groupPrivileges),
-                spaces = visible.Select(space =>
-                {
-                    var privileges = PrivilegesOn(group, userId, mine, space.Id);
-                    var heard = privileges.HasFlag(Privilege.View) ? NodesFor(space) : [];
-                    return new
-                    {
-                        id = space.Id,
-                        name = space.Name,
-                        privileges = PrivilegeText.ToNames(privileges),
-                        devices = privileges.HasFlag(Privilege.Credentials)
-                            ? space.Devices.OrderBy(d => d.CreatedAt).Select(d => DeviceView(d, heard, space.Devices.Count))
-                            : Array.Empty<object>(),
-                        activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>(),
-                        feed = privileges.HasFlag(Privilege.View) ? FeedFor(space) : Array.Empty<object>(),
-                        nodes = heard.Select(LiveObject)
-                    };
-                }),
+                spaces = await BuildSpaces(group, userId, mine, visible, ct),
                 spaceChoices = showGroupGrants
                     ? groupSpaces.Select(space => (object)new
                     {
@@ -132,6 +116,31 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         }
 
         return result;
+    }
+
+    async Task<IReadOnlyList<object>> BuildSpaces(Group group, Guid userId, List<GrantTunnel> mine, List<Space> visible, CancellationToken ct)
+    {
+        var rows = new List<object>();
+        foreach (var space in visible)
+        {
+            var privileges = PrivilegesOn(group, userId, mine, space.Id);
+            var heard = privileges.HasFlag(Privilege.View) ? NodesFor(space) : [];
+            var devices = privileges.HasFlag(Privilege.Credentials)
+                ? await DeviceViews(space.Devices, heard, ct)
+                : Array.Empty<object>();
+            rows.Add(new
+            {
+                id = space.Id,
+                name = space.Name,
+                privileges = PrivilegeText.ToNames(privileges),
+                devices,
+                activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>(),
+                feed = privileges.HasFlag(Privilege.View) ? FeedFor(space) : Array.Empty<object>(),
+                nodes = heard.Select(LiveObject)
+            });
+        }
+
+        return rows;
     }
 
     public async Task<object> CreateGroup(Guid userId, string? name, CancellationToken ct)
@@ -228,7 +237,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
             privileges = PrivilegeText.ToNames(privileges),
             connection = new { host = secrets.Value.PublicHost, port = secrets.Value.PublicPort, tls = true },
             devices = privileges.HasFlag(Privilege.Credentials)
-                ? space.Devices.OrderBy(d => d.CreatedAt).Select(d => DeviceView(d, privileges.HasFlag(Privilege.View) ? NodesFor(space) : [], space.Devices.Count))
+                ? await DeviceViews(space.Devices, privileges.HasFlag(Privilege.View) ? NodesFor(space) : [], ct)
                 : Array.Empty<object>(),
             activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>(),
             feed = privileges.HasFlag(Privilege.View) ? FeedFor(space) : Array.Empty<object>(),
@@ -272,7 +281,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         {
             Id = Guid.NewGuid(),
             SpaceId = space.Id,
-            DisplayName = RequireName(name),
+            DisplayName = OptionalName(name),
             Username = SecretText.Username(),
             CanSubscribe = canSubscribe,
             CanPublish = canPublish,
@@ -296,7 +305,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         return new
         {
             id = device.Id,
-            name = device.DisplayName,
+            name = DeviceTitle(device, null),
             config = RepeaterConfig.Encode(
                 secrets.Value.PublicHost,
                 secrets.Value.PublicPort,
@@ -511,29 +520,89 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
             .ToList();
     }
 
-    static object DeviceView(DeviceLogin device, IReadOnlyList<RepeaterLive> heard, int deviceCount)
+    async Task<IReadOnlyList<object>> DeviceViews(IEnumerable<DeviceLogin> devices, IReadOnlyList<RepeaterLive> heard, CancellationToken ct)
     {
-        var live = Match(device.DisplayName, heard, deviceCount);
-        return new
+        var ordered = devices.OrderBy(d => d.CreatedAt).ToList();
+        var matched = MatchDevices(ordered, heard);
+        var dirty = false;
+        foreach (var device in ordered)
         {
-            id = device.Id,
-            name = device.DisplayName,
-            canSubscribe = device.CanSubscribe,
-            canPublish = device.CanPublish,
-            createdAt = device.CreatedAt,
-            live = live is null ? null : LiveObject(live)
-        };
+            if (!matched.TryGetValue(device.Id, out var live))
+                continue;
+            var learned = LiveName(live);
+            if (learned is null || device.DisplayName == learned)
+                continue;
+            device.DisplayName = learned;
+            await db.DeviceLogins
+                .Where(row => row.Id == device.Id)
+                .ExecuteUpdateAsync(update => update.SetProperty(row => row.DisplayName, learned), ct);
+            dirty = true;
+        }
+
+        if (dirty)
+            cache.Invalidate();
+
+        return ordered.Select(device =>
+        {
+            matched.TryGetValue(device.Id, out var live);
+            return DeviceView(device, live);
+        }).ToList();
     }
 
-    static RepeaterLive? Match(string name, IReadOnlyList<RepeaterLive> heard, int deviceCount)
+    static object DeviceView(DeviceLogin device, RepeaterLive? live) => new
     {
-        var named = heard
-            .Where(node => node.Name.Length > 0 && string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(node => node.LastSeen)
-            .FirstOrDefault();
-        if (named is not null)
-            return named;
-        return deviceCount == 1 && heard.Count == 1 ? heard[0] : null;
+        id = device.Id,
+        name = DeviceTitle(device, live),
+        canSubscribe = device.CanSubscribe,
+        canPublish = device.CanPublish,
+        createdAt = device.CreatedAt,
+        live = live is null ? null : LiveObject(live)
+    };
+
+    static Dictionary<Guid, RepeaterLive?> MatchDevices(IReadOnlyList<DeviceLogin> devices, IReadOnlyList<RepeaterLive> heard)
+    {
+        var result = devices.ToDictionary(device => device.Id, _ => (RepeaterLive?)null);
+        var remaining = heard.ToList();
+        foreach (var device in devices.Where(item => item.DisplayName.Length > 0))
+        {
+            var named = remaining
+                .Where(node => NamesMatch(device.DisplayName, node))
+                .OrderByDescending(node => node.LastSeen)
+                .FirstOrDefault();
+            if (named is null)
+                continue;
+            result[device.Id] = named;
+            remaining.Remove(named);
+        }
+
+        var unmatched = devices.Where(device => result[device.Id] is null).ToList();
+        // Приветствие и пульс шлёт сам репитер. Остальные ключи — соседи, которых он уже слышал.
+        var announced = remaining.Where(Announced).ToList();
+        if (unmatched.Count == 1 && announced.Count == 1)
+            result[unmatched[0].Id] = announced[0];
+        else if (unmatched.Count == 1 && remaining.Count == 1)
+            result[unmatched[0].Id] = remaining[0];
+        return result;
+    }
+
+    static bool Announced(RepeaterLive node) =>
+        node.FrequencyHz is not null || node.BandwidthHz is not null || node.SpreadingFactor is not null ||
+        node.Forwarding is not null || node.PacketsPublished is not null || node.PacketsInbound is not null;
+
+    static bool NamesMatch(string name, RepeaterLive node) =>
+        (node.Name.Length > 0 && string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase)) ||
+        (node.AdvertName is { Length: > 0 } advert && string.Equals(advert, name, StringComparison.OrdinalIgnoreCase));
+
+    static string DeviceTitle(DeviceLogin device, RepeaterLive? live) =>
+        LiveName(live) ?? (device.DisplayName.Length > 0 ? device.DisplayName : "Репитер");
+
+    static string? LiveName(RepeaterLive? live)
+    {
+        if (live is null)
+            return null;
+        if (live.AdvertName is { Length: > 0 } advert)
+            return advert;
+        return live.Name.Length > 0 ? live.Name : null;
     }
 
     static object LiveObject(RepeaterLive live) => new
@@ -625,6 +694,16 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
     {
         var trimmed = (name ?? "").Trim();
         if (trimmed.Length is < 1 or > 200)
+            throw new AppException(400, "Имя должно быть от 1 до 200 символов");
+        return trimmed;
+    }
+
+    static string OptionalName(string? name)
+    {
+        var trimmed = (name ?? "").Trim();
+        if (trimmed.Length == 0)
+            return "";
+        if (trimmed.Length > 200)
             throw new AppException(400, "Имя должно быть от 1 до 200 символов");
         return trimmed;
     }

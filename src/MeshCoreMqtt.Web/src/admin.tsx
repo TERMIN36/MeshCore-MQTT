@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, download, privilegeLabel } from "./api";
+import { subscribeLive } from "./live";
 import { ConfirmDialog } from "./user";
 
 export function AccountsPage() {
@@ -123,7 +124,10 @@ export function SharingPage() {
 export function ActivityPage() {
   const [rows, setRows] = useState<any[]>([]);
   const [error, setError] = useState("");
-  useEffect(() => { api<any[]>("/api/admin/activity").then(setRows).catch((err) => setError(err.message)); }, []);
+  useEffect(() => {
+    api<any[]>("/api/admin/activity").then(setRows).catch((err) => setError(err.message));
+    return subscribeLive(["activity"], { onActivity: (data) => setRows(data as any[]) });
+  }, []);
   return (
     <>
       <h1>Сообщения</h1>
@@ -152,10 +156,15 @@ export function CertificatePage() {
   const [confirm, setConfirm] = useState(false);
   const [confirmKey, setConfirmKey] = useState(false);
 
+  function hostField(next: any) {
+    const hosts = Array.isArray(next?.hosts) && next.hosts.length > 0 ? next.hosts : [];
+    return hosts.length > 0 ? hosts.join(", ") : (next?.host ?? "");
+  }
+
   async function load() {
     const next = await api<any>("/api/admin/certificate");
     setInfo(next);
-    setHost(next.host ?? "");
+    setHost(hostField(next));
   }
 
   useEffect(() => { load().catch((err) => setError(err.message)); }, []);
@@ -170,10 +179,10 @@ export function CertificatePage() {
           <p>Имя: {info.host}</p>
           <p className="muted">Действует до {until}. В сертификате: {(info.names ?? []).join(", ")}</p>
           <form className="grid" onSubmit={(event) => { event.preventDefault(); setError(""); setConfirm(true); }}>
-            <input placeholder="Доменное имя или IP" value={host} onChange={(e) => setHost(e.target.value)} required />
+            <input placeholder="Домены и IP через запятую" value={host} onChange={(e) => setHost(e.target.value)} required />
             <button type="submit">Выпустить новый сертификат</button>
           </form>
-          <p className="muted">Новый сертификат сервера подписывается прежним CA. Уже настроенные репитеры доверяют этому CA, но в их строке настройки остаётся старое имя: подключаться они должны к имени нового сертификата. Новые строки получают его сами. Текущие сессии дорабатывают со старым сертификатом до переподключения.</p>
+          <p className="muted">Через запятую можно указать несколько доменов и IP: все они попадут в сертификат. Первое имя получают новые репитеры. Новый сертификат сервера подписывается прежним CA. Уже настроенные репитеры доверяют этому CA, но в их строке настройки остаётся старое имя: подключаться они должны к имени нового сертификата. Новые строки получают его сами. Текущие сессии дорабатывают со старым сертификатом до переподключения.</p>
         </section>
       )}
       {info && (
@@ -189,20 +198,20 @@ export function CertificatePage() {
             <textarea placeholder="PEM приватного ключа" value={pem} onChange={(e) => setPem(e.target.value)} required />
             <button type="submit">Импортировать ключ</button>
           </form>
-          <p className="muted">Файл — секрет сервера. Импорт заменяет ключ и выпускает сертификат на текущее имя, подпись CA прежняя. Прокси подхватывает его сразу, текущие сессии дорабатывают со старым ключом до переподключения.</p>
+          <p className="muted">Файл — секрет сервера. Импорт заменяет ключ и выпускает сертификат на те же имена, подпись CA прежняя. Прокси подхватывает его сразу, текущие сессии дорабатывают со старым ключом до переподключения.</p>
         </section>
       )}
       {confirm && (
         <ConfirmDialog
           title="Выпустить сертификат"
-          text={`Сертификат сервера будет выпущен заново на «${host.trim()}».`}
+          text={`Сертификат сервера будет выпущен заново на «${host.trim()}». Первое имя получат новые репитеры.`}
           confirmLabel="Выпустить"
           onClose={() => setConfirm(false)}
           onConfirm={async () => {
             try {
               const next = await api<any>("/api/admin/certificate", { method: "POST", body: JSON.stringify({ host }) });
               setInfo(next);
-              setHost(next.host ?? host);
+              setHost(hostField(next));
               setConfirm(false);
             } catch (err) {
               setError(err instanceof Error ? err.message : "Не удалось выпустить сертификат");
@@ -214,14 +223,14 @@ export function CertificatePage() {
       {confirmKey && (
         <ConfirmDialog
           title="Импортировать ключ"
-          text="Текущий приватный ключ сервера будет заменён. Сертификат на то же имя выпустится заново."
+          text="Текущий приватный ключ сервера будет заменён. Сертификат на те же имена выпустится заново."
           confirmLabel="Импортировать"
           onClose={() => setConfirmKey(false)}
           onConfirm={async () => {
             try {
               const next = await api<any>("/api/admin/certificate/key", { method: "POST", body: JSON.stringify({ pem }) });
               setInfo(next);
-              setHost(next.host ?? host);
+              setHost(hostField(next));
               setPem("");
               setConfirmKey(false);
             } catch (err) {
@@ -244,7 +253,10 @@ export function NodesPage() {
   const [error, setError] = useState("");
 
   async function load() { setNodes(await api("/api/admin/nodes")); }
-  useEffect(() => { load().catch((err) => setError(err.message)); }, []);
+  useEffect(() => {
+    load().catch((err) => setError(err.message));
+    return subscribeLive(["nodes"], { onNodes: (data) => setNodes(data as any[]) });
+  }, []);
 
   return (
     <>

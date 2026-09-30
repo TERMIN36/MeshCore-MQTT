@@ -28,6 +28,7 @@ builder.Services.AddSingleton(Microsoft.Extensions.Options.Options.Create(secret
 builder.Services.AddDbContext<AppDb>(options => options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
 builder.Services.AddSingleton<Passwords>();
 builder.Services.AddSingleton<DecisionCache>();
+builder.Services.AddSingleton<LiveHub>();
 builder.Services.AddSingleton<StatsStore>();
 builder.Services.AddScoped<Access>();
 builder.Services.AddScoped<MqttGate>();
@@ -46,6 +47,16 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ValidAudience = secrets.JwtIssuer,
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secrets.JwtKey))
     };
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var token = context.Request.Query["access_token"];
+            if (!string.IsNullOrEmpty(token))
+                context.Token = token;
+            return Task.CompletedTask;
+        }
+    };
 });
 builder.Services.AddAuthorization();
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
@@ -63,6 +74,7 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
     await context.Response.WriteAsJsonAsync(new { error = message });
 }));
 app.UseCors();
+app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -112,6 +124,25 @@ api.MapGet("/auth/me", async (ClaimsPrincipal principal, AppDb db, CancellationT
     var id = UserId(principal);
     var user = await db.Users.FirstAsync(u => u.Id == id, ct);
     return Results.Ok(new { id = user.Id, email = user.Email, name = user.DisplayName, admin = user.IsAdmin });
+}).RequireAuthorization();
+
+api.Map("/ws/live", async (HttpContext context, LiveHub hub, ClaimsPrincipal principal) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+
+    var watch = LiveHub.ParseWatch(context.Request.Query["watch"]);
+    if ((watch & (LiveWatch.Activity | LiveWatch.Nodes)) != 0 && !principal.IsInRole("admin"))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+
+    using var socket = await context.WebSockets.AcceptWebSocketAsync();
+    await hub.RunSession(socket, UserId(principal), watch, context.RequestAborted);
 }).RequireAuthorization();
 
 api.MapGet("/connection", (Catalog catalog) => catalog.Connection()).RequireAuthorization();

@@ -28,13 +28,13 @@ public static class CertificateFiles
                 return;
             }
 
-            Create(directory, host, caCertPath, serverCertPath, serverKeyPath);
+            Create(directory, [host], caCertPath, serverCertPath, serverKeyPath);
         });
     }
 
-    public static void Reissue(string directory, string host)
+    public static string Reissue(string directory, string? hostsText)
     {
-        host = NormalizeHost(host);
+        var hosts = NormalizeHosts(hostsText);
         Directory.CreateDirectory(directory);
         var caCertPath = Path.Combine(directory, "ca.crt");
         var caKeyPath = Path.Combine(directory, "ca.key");
@@ -43,10 +43,11 @@ public static class CertificateFiles
         WithLock(directory, () =>
         {
             if (!File.Exists(caCertPath) || !File.Exists(caKeyPath))
-                Create(directory, host, caCertPath, serverCertPath, serverKeyPath);
+                Create(directory, hosts, caCertPath, serverCertPath, serverKeyPath);
             else
-                ReplaceServer(directory, host, caCertPath, caKeyPath, serverCertPath, serverKeyPath);
+                ReplaceServer(directory, hosts, caCertPath, caKeyPath, serverCertPath, serverKeyPath);
         });
+        return hosts[0];
     }
 
     public static string FirstCertificate(string? pem)
@@ -79,12 +80,23 @@ public static class CertificateFiles
             throw new CertificateException("Сертификат ещё не выпущен");
         using var certificate = X509Certificate2.CreateFromPem(File.ReadAllText(path));
         var names = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var extension in certificate.Extensions)
         {
             if (extension is not X509SubjectAlternativeNameExtension alternative)
                 continue;
-            names.AddRange(alternative.EnumerateDnsNames());
-            names.AddRange(alternative.EnumerateIPAddresses().Select(ip => ip.ToString()));
+            foreach (var name in alternative.EnumerateDnsNames())
+            {
+                if (seen.Add(name))
+                    names.Add(name);
+            }
+
+            foreach (var ip in alternative.EnumerateIPAddresses())
+            {
+                var name = ip.ToString();
+                if (seen.Add(name))
+                    names.Add(name);
+            }
         }
 
         var host = ReadHost(directory) ?? certificate.GetNameInfo(X509NameType.SimpleName, false);
@@ -108,6 +120,45 @@ public static class CertificateFiles
         if (labels.Length == 0 || value.Length > 253 || labels.Any(label => !DnsLabel(label)))
             throw new CertificateException("Нужно доменное имя или IP-адрес");
         return value;
+    }
+
+    public static IReadOnlyList<string> NormalizeHosts(string? text)
+    {
+        var parts = (text ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+            throw new CertificateException("Нужно доменное имя или IP-адрес");
+        if (parts.Length > 32)
+            throw new CertificateException("В сертификат можно записать не больше 32 имён");
+        var names = new List<string>(parts.Length);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var part in parts)
+        {
+            var normalized = NormalizeHost(part);
+            if (seen.Add(normalized))
+                names.Add(normalized);
+        }
+
+        return names;
+    }
+
+    public static IReadOnlyList<string> ConfiguredHosts(string directory)
+    {
+        var primary = ReadHost(directory);
+        if (primary is null)
+            return [];
+        var hosts = new List<string> { primary };
+        var path = Path.Combine(directory, "public.names");
+        if (!File.Exists(path))
+            return hosts;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { primary };
+        foreach (var line in File.ReadAllLines(path))
+        {
+            var name = line.Trim();
+            if (name.Length > 0 && seen.Add(name))
+                hosts.Add(name);
+        }
+
+        return hosts;
     }
 
     static bool DnsLabel(string label) =>
@@ -159,7 +210,7 @@ public static class CertificateFiles
     static bool Ready(string caCertPath, string serverCertPath, string serverKeyPath) =>
         File.Exists(caCertPath) && File.Exists(serverCertPath) && File.Exists(serverKeyPath);
 
-    static void Create(string directory, string host, string caCertPath, string serverCertPath, string serverKeyPath)
+    static void Create(string directory, IReadOnlyList<string> hosts, string caCertPath, string serverCertPath, string serverKeyPath)
     {
         using var caKey = RSA.Create(2048);
         var caRequest = new CertificateRequest("CN=MeshCore MQTT CA", caKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -167,23 +218,23 @@ public static class CertificateFiles
         caRequest.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(caRequest.PublicKey, false));
         var caCert = caRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(10));
         using var serverKey = RSA.Create(2048);
-        var serverCert = IssueServer(host, caCert, serverKey);
+        var serverCert = IssueServer(hosts, caCert, serverKey);
         WritePem(caCertPath, "CERTIFICATE", caCert.RawData);
         WritePem(Path.Combine(directory, "ca.key"), "PRIVATE KEY", caKey.ExportPkcs8PrivateKey());
         WritePem(serverCertPath, "CERTIFICATE", serverCert.RawData);
         WritePem(serverKeyPath, "PRIVATE KEY", serverKey.ExportPkcs8PrivateKey());
-        WriteHost(directory, host);
+        WriteHosts(directory, hosts);
     }
 
-    static void ReplaceServer(string directory, string host, string caCertPath, string caKeyPath, string serverCertPath, string serverKeyPath)
+    static void ReplaceServer(string directory, IReadOnlyList<string> hosts, string caCertPath, string caKeyPath, string serverCertPath, string serverKeyPath)
     {
         using var loaded = X509Certificate2.CreateFromPemFile(caCertPath, caKeyPath);
         using var caCert = new X509Certificate2(loaded.Export(X509ContentType.Pkcs12));
         using var serverKey = RSA.Create(2048);
-        var serverCert = IssueServer(host, caCert, serverKey);
+        var serverCert = IssueServer(hosts, caCert, serverKey);
         WritePem(serverCertPath, "CERTIFICATE", serverCert.RawData);
         WritePem(serverKeyPath, "PRIVATE KEY", serverKey.ExportPkcs8PrivateKey());
-        WriteHost(directory, host);
+        WriteHosts(directory, hosts);
     }
 
     public static string ExportServerKey(string directory)
@@ -206,15 +257,17 @@ public static class CertificateFiles
         var serverKeyPath = Path.Combine(directory, "server.key");
         if (!File.Exists(caCertPath) || !File.Exists(caKeyPath))
             throw new CertificateException("Сертификат ещё не выпущен");
-        var host = NormalizeHost(ReadHost(directory) ?? Describe(directory).Host);
+        var hosts = ConfiguredHosts(directory);
+        if (hosts.Count == 0)
+            hosts = [NormalizeHost(Describe(directory).Host)];
         WithLock(directory, () =>
         {
             using var loaded = X509Certificate2.CreateFromPemFile(caCertPath, caKeyPath);
             using var caCert = new X509Certificate2(loaded.Export(X509ContentType.Pkcs12));
-            var serverCert = IssueServer(host, caCert, serverKey);
+            var serverCert = IssueServer(hosts, caCert, serverKey);
             WritePem(serverCertPath, "CERTIFICATE", serverCert.RawData);
             WritePem(serverKeyPath, "PRIVATE KEY", serverKey.ExportPkcs8PrivateKey());
-            WriteHost(directory, host);
+            WriteHosts(directory, hosts);
         });
     }
 
@@ -245,22 +298,29 @@ public static class CertificateFiles
         }
     }
 
-    static X509Certificate2 IssueServer(string host, X509Certificate2 caCert, RSA serverKey)
+    static X509Certificate2 IssueServer(IReadOnlyList<string> hosts, X509Certificate2 caCert, RSA serverKey)
     {
-        var serverRequest = new CertificateRequest(Subject(host), serverKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var serverRequest = new CertificateRequest(Subject(hosts[0]), serverKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
-        if (IPAddress.TryParse(host, out var ip))
+        var dns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ips = new HashSet<IPAddress>();
+        foreach (var host in hosts)
         {
-            san.AddIpAddress(ip);
-            // Репитер сверяет адрес как DNS-имя, даже когда в настройках указан IP.
-            if (ip.AddressFamily == AddressFamily.InterNetwork)
-                san.AddDnsName(host);
+            if (IPAddress.TryParse(host, out var ip))
+            {
+                if (ips.Add(ip))
+                    san.AddIpAddress(ip);
+                // Репитер сверяет адрес как DNS-имя, даже когда в настройках указан IP.
+                if (ip.AddressFamily == AddressFamily.InterNetwork)
+                    AddDns(san, dns, host);
+            }
+            else
+                AddDns(san, dns, host);
         }
-        else
-            san.AddDnsName(host);
-        if (!host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
-            san.AddDnsName("localhost");
-        san.AddIpAddress(IPAddress.Loopback);
+
+        AddDns(san, dns, "localhost");
+        if (ips.Add(IPAddress.Loopback))
+            san.AddIpAddress(IPAddress.Loopback);
         serverRequest.CertificateExtensions.Add(san.Build());
         serverRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
         serverRequest.CertificateExtensions.Add(new X509KeyUsageExtension(
@@ -270,6 +330,12 @@ public static class CertificateFiles
             DateTimeOffset.UtcNow.AddDays(-1),
             DateTimeOffset.UtcNow.AddYears(2),
             RandomNumberGenerator.GetBytes(16));
+    }
+
+    static void AddDns(SubjectAlternativeNameBuilder san, HashSet<string> dns, string name)
+    {
+        if (dns.Add(name))
+            san.AddDnsName(name);
     }
 
     static string Subject(string host)
@@ -290,6 +356,22 @@ public static class CertificateFiles
         var path = Path.Combine(directory, "public.host");
         var temp = path + ".tmp";
         File.WriteAllText(temp, host + "\n");
+        File.Move(temp, path, true);
+    }
+
+    static void WriteHosts(string directory, IReadOnlyList<string> hosts)
+    {
+        WriteHost(directory, hosts[0]);
+        var path = Path.Combine(directory, "public.names");
+        if (hosts.Count == 1)
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+            return;
+        }
+
+        var temp = path + ".tmp";
+        File.WriteAllText(temp, string.Join('\n', hosts.Skip(1)) + "\n");
         File.Move(temp, path, true);
     }
 

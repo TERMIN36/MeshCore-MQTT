@@ -252,8 +252,12 @@ public sealed class AdminWork(AppDb db, Passwords passwords, DecisionCache cache
     {
         try
         {
-            var info = CertificateFiles.Describe(secrets.Value.CertsDirectory);
-            return new { host = info.Host, notAfter = info.NotAfter, names = info.Names };
+            var directory = secrets.Value.CertsDirectory;
+            var info = CertificateFiles.Describe(directory);
+            var hosts = CertificateFiles.ConfiguredHosts(directory);
+            if (hosts.Count == 0)
+                hosts = [info.Host];
+            return new { host = info.Host, notAfter = info.NotAfter, names = info.Names, hosts };
         }
         catch (CertificateException ex)
         {
@@ -263,18 +267,14 @@ public sealed class AdminWork(AppDb db, Passwords passwords, DecisionCache cache
 
     public async Task<object> ReissueCertificate(string? host, CancellationToken ct)
     {
-        string normalized;
         try
         {
-            normalized = CertificateFiles.NormalizeHost(host);
-            CertificateFiles.Reissue(secrets.Value.CertsDirectory, normalized);
+            secrets.Value.PublicHost = CertificateFiles.Reissue(secrets.Value.CertsDirectory, host);
         }
         catch (CertificateException ex)
         {
             throw new AppException(400, ex.Message);
         }
-
-        secrets.Value.PublicHost = normalized;
         await proxy.ReloadCertificate(ct);
         return Certificate();
     }
