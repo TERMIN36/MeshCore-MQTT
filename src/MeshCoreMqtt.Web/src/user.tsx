@@ -46,7 +46,7 @@ type FeedItem = { topic: string; seen: string; publicKey: string; name: string; 
 type Login = { id: string; name: string; config: string };
 type MapPoint = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean };
 type MapEdge = { from: string; to: string; seen: string };
-type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[]; feed?: FeedItem[]; map?: { nodes: MapPoint[]; links: MapEdge[] } };
+type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[]; feed?: FeedItem[]; map?: { nodes: MapPoint[]; links: MapEdge[]; unplaced?: string[] } };
 type GroupNode = { id: string; name: string; owner: string; ownerEmail: string; createdAt: string; mine: boolean; privileges: string[]; spaces: SpaceNode[]; spaceChoices: SpaceChoice[]; grants: Grant[] };
 
 const EMPTY = "—";

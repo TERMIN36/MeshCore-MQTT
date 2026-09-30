@@ -512,7 +512,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
             });
     }
 
-    static readonly object EmptyMap = new { nodes = Array.Empty<object>(), links = Array.Empty<object>() };
+    static readonly object EmptyMap = new { nodes = Array.Empty<object>(), links = Array.Empty<object>(), unplaced = Array.Empty<string>() };
 
     object MapFor(Space space)
     {
@@ -532,7 +532,8 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 from = link.From,
                 to = link.To,
                 seen = link.Seen
-            })
+            }),
+            unplaced = map.Unplaced
         };
     }
 

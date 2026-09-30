@@ -145,7 +145,7 @@ public static class BridgeFrames
             6 => "данные группы, содержимое зашифровано",
             7 => "анонимный запрос, содержимое зашифровано",
             8 => packet.Path.Length == 0 ? "путь" : $"путь, отметок {packet.Path.Length}",
-            9 => "трассировка",
+            9 => packet.Path.Length == 0 ? "трассировка" : $"трассировка, отметок {packet.Path.Length}",
             10 => "составной пакет",
             11 => "управление",
             15 => "свой формат",
@@ -338,9 +338,44 @@ public static class BridgeFrames
         }
 
         AdvertBody? advert = null;
-        if (type == 4)
+        byte[]? nodeKey = null;
+        int? nodeType = null;
+        if (type == 9 && TryTrace(raw[i..], out var trace))
+            path = trace;
+        else if (type == 4)
             TryAdvert(raw[i..], out advert);
-        packet = new MeshPacket(type, (byte)route, path, advert);
+        else if (type == 11)
+            TryDiscover(raw[i..], out nodeKey, out nodeType);
+        packet = new MeshPacket(type, (byte)route, path, advert, nodeKey, nodeType);
+        return true;
+    }
+
+    static bool TryTrace(ReadOnlySpan<byte> payload, out byte[][] path)
+    {
+        path = [];
+        if (payload.Length < 10)
+            return false;
+        var size = 1 << (payload[8] & 0x03);
+        var body = payload[9..];
+        if (body.Length == 0 || body.Length % size != 0)
+            return false;
+        var count = body.Length / size;
+        if (count > 63)
+            return false;
+        path = new byte[count][];
+        for (var n = 0; n < count; n++)
+            path[n] = body.Slice(n * size, size).ToArray();
+        return true;
+    }
+
+    static bool TryDiscover(ReadOnlySpan<byte> payload, out byte[]? key, out int? type)
+    {
+        key = null;
+        type = null;
+        if (payload.Length < 6 + 32 || (payload[0] & 0xF0) != 0x90)
+            return false;
+        type = payload[0] & 0x0F;
+        key = payload.Slice(6, 32).ToArray();
         return true;
     }
 
@@ -444,7 +479,7 @@ public sealed record HeartbeatBody(
     double? Latitude,
     double? Longitude);
 
-public sealed record MeshPacket(byte PayloadType, byte Route, byte[][] Path, AdvertBody? Advert);
+public sealed record MeshPacket(byte PayloadType, byte Route, byte[][] Path, AdvertBody? Advert, byte[]? NodeKey = null, int? NodeType = null);
 
 public sealed record AdvertBody(
     string PublicKey,

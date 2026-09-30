@@ -248,6 +248,35 @@ public class BridgeFramesTests
     }
 
     [Fact]
+    public void Trace_uses_hashes_from_the_payload()
+    {
+        var body = new List<byte> { (byte)(2 | (9 << 2)), 1, 0x40 };
+        body.AddRange(new byte[8]);
+        body.Add(0);
+        body.Add(0xAA);
+        body.Add(0xBB);
+
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 6, null, body), out var message));
+        var packet = message.Packet!;
+        Assert.Equal(9, packet.PayloadType);
+        Assert.Equal(new byte[] { 0xAA }, packet.Path[0]);
+        Assert.Equal(new byte[] { 0xBB }, packet.Path[1]);
+        Assert.Contains("трассировка, отметок 2", BridgeFrames.Describe(message));
+    }
+
+    [Fact]
+    public void Discover_response_exposes_the_node_key()
+    {
+        var body = new List<byte> { (byte)(2 | (11 << 2)), 0, 0x92, 0, 0, 0, 0, 0 };
+        body.AddRange(Enumerable.Repeat((byte)0x44, 32));
+
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 7, null, body), out var message));
+        Assert.Equal(2, message.Packet!.NodeType);
+        Assert.NotNull(message.Packet.NodeKey);
+        Assert.Equal(Enumerable.Repeat((byte)0x44, 32), message.Packet.NodeKey);
+    }
+
+    [Fact]
     public void Unknown_version_is_rejected()
     {
         Assert.False(BridgeFrames.TryDecode([2, 1], out _));

@@ -7,7 +7,7 @@ type Space = {
   name: string;
   privileges: string[];
   devices: { id: string; live?: { publicKey: string } | null }[];
-  map?: { nodes: Point[]; links: Edge[] };
+  map?: { nodes: Point[]; links: Edge[]; unplaced?: string[] };
 };
 
 const COLORS = ["#38bdf8", "#a78bfa", "#fbbf24", "#fb7185", "#34d399", "#f472b6"];
@@ -24,7 +24,7 @@ export function GroupMap({ group, onOpenDevice }: {
   const [view, setView] = useState(() => centerOf(55.751244, 37.618423, 4));
   const fitted = useRef("");
 
-  const { markers, lines, tunnels } = useMemo(() => collect(group.spaces), [group.spaces]);
+  const { markers, lines, tunnels, unplaced } = useMemo(() => collect(group.spaces), [group.spaces]);
 
   useEffect(() => {
     const node = host.current;
@@ -118,9 +118,10 @@ export function GroupMap({ group, onOpenDevice }: {
         );
       })}
       <div className="group-map-legend">
-        <p>Тунель — пространство. Линия — хоп из пакета PATH. Квадрат — репитер.</p>
+        <p>Тунель — пространство. Узел — участник, у которого в трафике есть координаты. Линия — шаг маршрута. Квадрат — репитер.</p>
         {tunnels.length === 0 && <p>Тунелей с просмотром нет.</p>}
-        {markers.length === 0 && tunnels.length > 0 && <p>Координат ещё нет: они приходят в объявлении или приветствии.</p>}
+        {markers.length === 0 && tunnels.length > 0 && <p>Участников с координатами ещё нет.</p>}
+        {unplaced.length > 0 && <p>Без координат: {unplaced.join(", ")}</p>}
         {tunnels.map((item) => (
           <p key={item.id}><i style={{ background: item.color }} />{item.name}</p>
         ))}
@@ -137,6 +138,7 @@ function collect(spaces: Space[]) {
   const color = new Map(tunnels.map((item) => [item.id, item.color]));
   const markers: Marker[] = [];
   const lines: Line[] = [];
+  const unplaced: string[] = [];
   for (const space of visible) {
     for (const node of space.map?.nodes ?? []) {
       markers.push({ ...node, spaceId: space.id, spaceName: space.name, color: color.get(space.id) ?? COLORS[0] });
@@ -144,8 +146,11 @@ function collect(spaces: Space[]) {
     for (const link of space.map?.links ?? []) {
       lines.push({ ...link, spaceId: space.id, color: color.get(space.id) ?? COLORS[0] });
     }
+    for (const name of space.map?.unplaced ?? []) {
+      if (!unplaced.includes(name)) unplaced.push(name);
+    }
   }
-  return { markers, lines, tunnels };
+  return { markers, lines, tunnels, unplaced };
 }
 
 function centerOf(latitude: number, longitude: number, zoom: number) {
