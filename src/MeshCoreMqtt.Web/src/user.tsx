@@ -285,7 +285,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                         setError(err instanceof Error ? err.message : "Не удалось удалить репитер");
                         throw err;
                       }
-                    }}
+                    } : undefined}
                   />
                 )}
               </div>
