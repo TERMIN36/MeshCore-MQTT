@@ -253,9 +253,14 @@ public class CertificateFilesTests
         var request = new CertificateRequest(subject, key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+        var notBefore = DateTimeOffset.UtcNow.AddDays(-1);
+        var notAfter = DateTimeOffset.UtcNow.AddYears(5);
         if (issuer is null)
-            return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
-        using var issued = request.Create(issuer, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5), [1]);
+            return request.CreateSelfSigned(notBefore, notAfter);
+        var issuerEnd = new DateTimeOffset(issuer.NotAfter);
+        if (notAfter > issuerEnd)
+            notAfter = issuerEnd;
+        using var issued = request.Create(issuer, notBefore, notAfter, [1]);
         return issued.CopyWithPrivateKey(key);
     }
 
