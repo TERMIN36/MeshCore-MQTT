@@ -80,7 +80,7 @@ public static class BridgeFrames
             return DescribePacket(packet);
         return message.Type switch
         {
-            1 => "пакет",
+            1 => "пакет не разобран",
             2 => "приветствие",
             3 => "пульс",
             _ => "неизвестный тип " + message.Type
@@ -134,24 +134,84 @@ public static class BridgeFrames
                 : $"объявление {named}";
         }
 
-        return packet.PayloadType switch
+        var text = packet.PayloadType switch
         {
-            0 => "запрос, содержимое зашифровано",
-            1 => "ответ, содержимое зашифровано",
-            2 => "текст, содержимое зашифровано",
+            0 => Encrypted("запрос", packet),
+            1 => Encrypted("ответ", packet),
+            2 => Encrypted("текст", packet),
             3 => "подтверждение",
             4 => "объявление",
-            5 => "текст группы, содержимое зашифровано",
-            6 => "данные группы, содержимое зашифровано",
-            7 => "анонимный запрос, содержимое зашифровано",
+            5 => Encrypted("текст группы", packet),
+            6 => Encrypted("данные группы", packet),
+            7 => Anon(packet),
             8 => packet.Path.Length == 0 ? "путь" : $"путь, отметок {packet.Path.Length}",
             9 => packet.Path.Length == 0 ? "трассировка" : $"трассировка, отметок {packet.Path.Length}",
-            10 => "составной пакет",
-            11 => "управление",
+            10 => Multipart(packet),
+            11 => Control(packet),
             15 => "свой формат",
             _ => "пакет типа " + packet.PayloadType
         };
+        if (!packet.RouteParsed)
+            return text + ", маршрут не разобран";
+        if (packet.PayloadType is 8 or 3 or 4 or 9 or 11)
+            return WithEnds(text, packet);
+        return text;
     }
+
+    static string Encrypted(string kind, MeshPacket packet)
+    {
+        if (!packet.RouteParsed)
+            return kind;
+        var who = packet.SrcHash is not null && packet.DestHash is not null
+            ? $" от {Hex(packet.SrcHash)} для {Hex(packet.DestHash)}"
+            : "";
+        var hops = packet.Path.Length > 0 ? $", хопов {packet.Path.Length}" : "";
+        return $"{kind}{who}{hops}, содержимое зашифровано";
+    }
+
+    static string Anon(MeshPacket packet)
+    {
+        if (packet.NodeKey is not { Length: 32 } key)
+            return "анонимный запрос, содержимое зашифровано";
+        var hops = packet.RouteParsed && packet.Path.Length > 0 ? $", хопов {packet.Path.Length}" : "";
+        return $"анонимный запрос от {Hex(key.AsSpan(0, 4))}{hops}, содержимое зашифровано";
+    }
+
+    static string Multipart(MeshPacket packet)
+    {
+        if (packet.InnerType is not int inner)
+            return "составной пакет";
+        var kind = inner switch
+        {
+            3 => "подтверждение",
+            _ => "тип " + inner
+        };
+        return "составной пакет, " + kind;
+    }
+
+    static string Control(MeshPacket packet)
+    {
+        if (packet.Control is not byte code)
+            return "управление";
+        var high = code & 0xF0;
+        if (high == 0x80)
+            return "запрос поиска";
+        if (high != 0x90)
+            return "управление";
+        var kind = AdvertKind(code & 0x0F);
+        return packet.NodeKey is not null
+            ? $"ответ поиска, {kind}"
+            : $"ответ поиска, {kind}, ключ укорочен";
+    }
+
+    static string WithEnds(string text, MeshPacket packet)
+    {
+        if (packet.SrcHash is null || packet.DestHash is null)
+            return text;
+        return $"{text} от {Hex(packet.SrcHash)} для {Hex(packet.DestHash)}";
+    }
+
+    static string Hex(ReadOnlySpan<byte> data) => Convert.ToHexString(data).ToLowerInvariant();
 
     public static string AdvertKind(int type) => type switch
     {
@@ -167,15 +227,33 @@ public static class BridgeFrames
     public static string Place(double lat, double lon) =>
         lat.ToString("0.######", CultureInfo.InvariantCulture) + ", " + lon.ToString("0.######", CultureInfo.InvariantCulture);
 
-    public static IReadOnlyList<string> RouteChain(string publisherKey, byte route, byte[][] path)
+    public static IReadOnlyList<string> RouteChain(string publisherKey, byte route, byte[][] path, ReadOnlySpan<byte> origin = default)
     {
-        var marks = new List<string>(path.Length + 1);
+        var marks = new List<string>(path.Length + 2);
         var flood = (route & 0x03) is 0 or 1;
+        if (flood && origin.Length > 0)
+            marks.Add(Convert.ToHexString(origin).ToLowerInvariant());
         if (!flood && publisherKey.Length > 0)
             marks.Add(publisherKey.ToLowerInvariant());
         foreach (var hash in path)
             marks.Add(Convert.ToHexString(hash).ToLowerInvariant());
         return marks;
+    }
+
+    public static bool HeardDirectly(string publisherKey, MeshPacket packet)
+    {
+        if (packet.Shared || packet.Advert is null || !packet.RouteParsed)
+            return false;
+        if ((packet.Route & 0x03) is not (0 or 1))
+            return false;
+        if (string.Equals(packet.Advert.PublicKey, publisherKey, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (packet.Path.Length == 0)
+            return true;
+        if (packet.Path.Length != 1)
+            return false;
+        var mark = Convert.ToHexString(packet.Path[0]);
+        return publisherKey.StartsWith(mark, StringComparison.OrdinalIgnoreCase);
     }
 
     static bool TryHello(ReadOnlySpan<byte> body, out HelloBody hello)
@@ -309,16 +387,65 @@ public static class BridgeFrames
     static bool TryPacket(ReadOnlySpan<byte> raw, out MeshPacket? packet)
     {
         packet = null;
-        if (raw.Length < 2)
+        if (raw.Length < 1)
             return false;
         var header = raw[0];
-        var route = header & 0x03;
+        var route = (byte)(header & 0x03);
         var type = (byte)((header >> 2) & 0x0F);
+        if (!TryFrame(raw, route, out var path, out var payload, out var shared))
+        {
+            packet = new MeshPacket(type, route, [], null, RouteParsed: false);
+            return true;
+        }
+
+        AdvertBody? advert = null;
+        byte[]? nodeKey = null;
+        int? nodeType = null;
+        byte? control = null;
+        int? inner = null;
+        if (type == 9)
+            path = TryTrace(payload, out var trace) ? trace : [];
+        else if (type == 4)
+            TryAdvert(payload, out advert);
+        else if (type == 11)
+        {
+            if (payload.Length > 0)
+                control = payload[0];
+            TryDiscover(payload, out nodeKey, out nodeType);
+        }
+        else if (type == 10 && payload.Length > 0)
+            inner = payload[0] & 0x0F;
+
+        byte[]? dest = null;
+        byte[]? src = null;
+        if (type is 0 or 1 or 2 or 8 && payload.Length >= 2)
+        {
+            dest = payload[..1].ToArray();
+            src = payload.Slice(1, 1).ToArray();
+        }
+        else if (type == 7 && payload.Length >= 33)
+        {
+            dest = payload[..1].ToArray();
+            nodeKey = payload.Slice(1, 32).ToArray();
+        }
+
+        packet = new MeshPacket(type, route, path, advert, nodeKey, nodeType, dest, src, true, inner, control, shared);
+        return true;
+    }
+
+    static bool TryFrame(ReadOnlySpan<byte> raw, byte route, out byte[][] path, out ReadOnlySpan<byte> payload, out bool shared)
+    {
+        path = [];
+        payload = default;
+        shared = false;
         var i = 1;
         if (route is 0 or 3)
         {
             if (raw.Length < i + 4)
                 return false;
+            var scope = ReadU16(raw.Slice(i, 2));
+            var zone = ReadU16(raw.Slice(i + 2, 2));
+            shared = scope == 0 && zone == 0;
             i += 4;
         }
 
@@ -330,23 +457,14 @@ public static class BridgeFrames
         var pathBytes = count * hashSize;
         if (hashSize == 4 || pathBytes > 64 || i + pathBytes > raw.Length)
             return false;
-        var path = new byte[count][];
+        path = new byte[count][];
         for (var n = 0; n < count; n++)
         {
             path[n] = raw.Slice(i, hashSize).ToArray();
             i += hashSize;
         }
 
-        AdvertBody? advert = null;
-        byte[]? nodeKey = null;
-        int? nodeType = null;
-        if (type == 9 && TryTrace(raw[i..], out var trace))
-            path = trace;
-        else if (type == 4)
-            TryAdvert(raw[i..], out advert);
-        else if (type == 11)
-            TryDiscover(raw[i..], out nodeKey, out nodeType);
-        packet = new MeshPacket(type, (byte)route, path, advert, nodeKey, nodeType);
+        payload = raw[i..];
         return true;
     }
 
@@ -360,7 +478,7 @@ public static class BridgeFrames
         if (body.Length == 0 || body.Length % size != 0)
             return false;
         var count = body.Length / size;
-        if (count > 63)
+        if (count > 64)
             return false;
         path = new byte[count][];
         for (var n = 0; n < count; n++)
@@ -479,7 +597,19 @@ public sealed record HeartbeatBody(
     double? Latitude,
     double? Longitude);
 
-public sealed record MeshPacket(byte PayloadType, byte Route, byte[][] Path, AdvertBody? Advert, byte[]? NodeKey = null, int? NodeType = null);
+public sealed record MeshPacket(
+    byte PayloadType,
+    byte Route,
+    byte[][] Path,
+    AdvertBody? Advert,
+    byte[]? NodeKey = null,
+    int? NodeType = null,
+    byte[]? DestHash = null,
+    byte[]? SrcHash = null,
+    bool RouteParsed = true,
+    int? InnerType = null,
+    byte? Control = null,
+    bool Shared = false);
 
 public sealed record AdvertBody(
     string PublicKey,

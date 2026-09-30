@@ -277,6 +277,103 @@ public class BridgeFramesTests
     }
 
     [Fact]
+    public void Text_packet_exposes_clear_ends_and_hops()
+    {
+        var body = new List<byte> { (byte)(1 | (2 << 2)), 1, 0xAA, 0x11, 0x22, 0x01 };
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 8, null, body), out var message));
+        var packet = message.Packet!;
+        Assert.Equal(2, packet.PayloadType);
+        Assert.True(packet.RouteParsed);
+        Assert.Equal(new byte[] { 0x11 }, packet.DestHash);
+        Assert.Equal(new byte[] { 0x22 }, packet.SrcHash);
+        Assert.Equal("текст от 22 для 11, хопов 1, содержимое зашифровано", BridgeFrames.Describe(message));
+        Assert.Equal(["22", "aa"], BridgeFrames.RouteChain("ab", packet.Route, packet.Path, packet.SrcHash));
+    }
+
+    [Fact]
+    public void Wide_transport_hash_still_parses()
+    {
+        var body = new List<byte> { (byte)(2 << 2), 1, 2, 3, 4, 0x41, 0xAA, 0xBB, 0xCC, 0xDD };
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 9, null, body), out var message));
+        var packet = message.Packet!;
+        Assert.Equal(0, packet.Route);
+        Assert.Equal(new byte[] { 0xAA, 0xBB }, packet.Path[0]);
+        Assert.Equal(new byte[] { 0xDD }, packet.SrcHash);
+        Assert.Contains("хопов 1", BridgeFrames.Describe(message));
+    }
+
+    [Fact]
+    public void Broken_route_keeps_the_payload_type()
+    {
+        var body = new List<byte> { (byte)(1 | (2 << 2)), 10, 0xAA, 0xBB };
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 10, null, body), out var message));
+        Assert.NotNull(message.Packet);
+        Assert.Equal(2, message.Packet!.PayloadType);
+        Assert.False(message.Packet.RouteParsed);
+        Assert.Empty(message.Packet.Path);
+        Assert.Equal("текст, маршрут не разобран", BridgeFrames.Describe(message));
+    }
+
+    [Fact]
+    public void Anon_request_exposes_the_sender_key()
+    {
+        var body = new List<byte> { (byte)(2 | (7 << 2)), 0, 0x11 };
+        body.AddRange(Enumerable.Repeat((byte)0x55, 32));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 11, null, body), out var message));
+        Assert.NotNull(message.Packet!.NodeKey);
+        Assert.Equal(Enumerable.Repeat((byte)0x55, 32), message.Packet.NodeKey);
+        Assert.Contains("анонимный запрос от 55555555", BridgeFrames.Describe(message));
+    }
+
+    [Fact]
+    public void Trace_hash_size_comes_from_the_payload_flags()
+    {
+        var body = new List<byte> { (byte)(2 | (9 << 2)), 1, 0x10 };
+        body.AddRange(new byte[8]);
+        body.Add(1);
+        body.AddRange([0xAA, 0xBB, 0xCC, 0xDD]);
+
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 13, null, body), out var message));
+        var packet = message.Packet!;
+        Assert.Equal(2, packet.Path.Length);
+        Assert.Equal(new byte[] { 0xAA, 0xBB }, packet.Path[0]);
+        Assert.Equal(new byte[] { 0xCC, 0xDD }, packet.Path[1]);
+    }
+
+    [Fact]
+    public void Zero_transport_codes_mark_a_shared_advert()
+    {
+        var shared = new List<byte> { (byte)(2 << 2), 0, 0, 0, 0, 0, 0x11, 0x22 };
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 14, null, shared), out var message));
+        Assert.True(message.Packet!.Shared);
+
+        var scoped = new List<byte> { (byte)(2 << 2), 1, 0, 0, 0, 0, 0x11, 0x22 };
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 15, null, scoped), out var other));
+        Assert.False(other.Packet!.Shared);
+    }
+
+    [Fact]
+    public void Direct_hear_is_an_empty_path_or_only_the_publisher()
+    {
+        var advert = new AdvertBody(new string('1', 64), 1, 2, "N", 1, 2);
+        var publisher = new string('a', 64);
+        Assert.True(BridgeFrames.HeardDirectly(publisher, new MeshPacket(4, 1, [], advert)));
+        Assert.True(BridgeFrames.HeardDirectly(publisher, new MeshPacket(4, 1, [new byte[] { 0xAA }], advert)));
+        Assert.False(BridgeFrames.HeardDirectly(publisher, new MeshPacket(4, 1, [new byte[] { 0xFF }], advert)));
+        Assert.False(BridgeFrames.HeardDirectly(publisher, new MeshPacket(4, 1, [new byte[] { 0xAA }], advert, Shared: true)));
+        Assert.False(BridgeFrames.HeardDirectly(publisher, new MeshPacket(4, 1, [new byte[] { 0xAA }, new byte[] { 0xBB }], advert)));
+    }
+
+    [Fact]
+    public void Discover_request_is_named()
+    {
+        var body = new List<byte> { (byte)(2 | (11 << 2)), 0, 0x80, 0x02, 1, 2, 3, 4 };
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 12, null, body), out var message));
+        Assert.Equal("запрос поиска", BridgeFrames.Describe(message));
+        Assert.Null(message.Packet!.NodeKey);
+    }
+
+    [Fact]
     public void Unknown_version_is_rejected()
     {
         Assert.False(BridgeFrames.TryDecode([2, 1], out _));

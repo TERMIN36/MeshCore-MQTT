@@ -452,7 +452,7 @@ public sealed class StatsStore(LiveHub live)
 
     void RememberPath(Guid nodeId, string tunnel, BridgeMessage message, DateTime seen)
     {
-        if (message.Packet is not { } packet || packet.PayloadType == 11)
+        if (message.Packet is not { } packet || packet.PayloadType == 11 || !packet.RouteParsed)
             return;
         if (packet.PayloadType == 9)
         {
@@ -460,12 +460,12 @@ public sealed class StatsStore(LiveHub live)
                 KeepHop(nodeId, tunnel, Convert.ToHexString(packet.Path[i]), Convert.ToHexString(packet.Path[i + 1]), seen);
             return;
         }
-        var flood = (packet.Route & 0x03) is 0 or 1;
-        if (flood && packet.Path.Length <= 1 && packet.Advert is { } advert &&
-            !string.Equals(advert.PublicKey, message.PublicKey, StringComparison.OrdinalIgnoreCase))
-            KeepHop(nodeId, tunnel, message.PublicKey, advert.PublicKey, seen);
+        if (BridgeFrames.HeardDirectly(message.PublicKey, packet))
+            KeepHop(nodeId, tunnel, message.PublicKey, packet.Advert!.PublicKey, seen);
 
-        var chain = BridgeFrames.RouteChain(message.PublicKey, packet.Route, packet.Path);
+        var chain = packet.SrcHash is { } origin
+            ? BridgeFrames.RouteChain(message.PublicKey, packet.Route, packet.Path, origin)
+            : BridgeFrames.RouteChain(message.PublicKey, packet.Route, packet.Path);
         for (var i = 0; i + 1 < chain.Count; i++)
             KeepHop(nodeId, tunnel, chain[i], chain[i + 1], seen);
     }
