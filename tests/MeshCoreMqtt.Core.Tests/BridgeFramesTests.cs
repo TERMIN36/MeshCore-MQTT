@@ -228,6 +228,26 @@ public class BridgeFramesTests
     }
 
     [Fact]
+    public void Path_packet_keeps_route_marks()
+    {
+        var direct = new List<byte> { (byte)(2 | (8 << 2)), 2, 0xAA, 0xBB, 0x01 };
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 4, null, direct), out var message));
+        var packet = message.Packet!;
+        Assert.Equal(8, packet.PayloadType);
+        Assert.Equal(2, packet.Route);
+        Assert.Equal(new byte[] { 0xAA }, packet.Path[0]);
+        Assert.Equal(new byte[] { 0xBB }, packet.Path[1]);
+        var publisher = string.Concat(Enumerable.Repeat("ab", 32));
+        var chain = BridgeFrames.RouteChain(publisher, packet.Route, packet.Path);
+        Assert.Equal([publisher, "aa", "bb"], chain);
+        Assert.Contains("путь, отметок 2", BridgeFrames.Describe(message));
+
+        var flood = new List<byte> { (byte)(1 | (8 << 2)), 2, 0x11, 0x22, 0x01 };
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 5, null, flood), out var flooded));
+        Assert.Equal(["11", "22"], BridgeFrames.RouteChain(publisher, flooded.Packet!.Route, flooded.Packet.Path));
+    }
+
+    [Fact]
     public void Unknown_version_is_rejected()
     {
         Assert.False(BridgeFrames.TryDecode([2, 1], out _));

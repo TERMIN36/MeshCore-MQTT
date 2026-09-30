@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, privilegeLabel } from "./api";
 import { subscribeLive } from "./live";
+import { GroupMap } from "./map";
 import { SetupHint } from "./setup-guide";
 
 type TunnelMark = { spaceId: string; name: string; privileges: string[] };
@@ -43,7 +44,9 @@ type Device = { id: string; name: string; createdAt?: string; live?: Live | null
 type Activity = { topic: string; messagesPerMinute: number; lastSeen: string };
 type FeedItem = { topic: string; seen: string; publicKey: string; name: string; summary: string };
 type Login = { id: string; name: string; config: string };
-type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[]; feed?: FeedItem[] };
+type MapPoint = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean };
+type MapEdge = { from: string; to: string; seen: string };
+type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[]; feed?: FeedItem[]; map?: { nodes: MapPoint[]; links: MapEdge[] } };
 type GroupNode = { id: string; name: string; owner: string; ownerEmail: string; createdAt: string; mine: boolean; privileges: string[]; spaces: SpaceNode[]; spaceChoices: SpaceChoice[]; grants: Grant[] };
 
 const EMPTY = "—";
@@ -147,8 +150,12 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
     const current = readPlace(location.pathname);
     const resolved = resolvePlace(groups, current);
     const pathname = placePath(resolved);
-    const messagesOn = !!resolved.spaceId && new URLSearchParams(location.search).get("messages") === "1";
-    const search = messagesOn ? "?messages=1" : "";
+    const params = new URLSearchParams(location.search);
+    const search = resolved.spaceId && params.get("messages") === "1"
+      ? "?messages=1"
+      : !resolved.spaceId && params.get("map") === "1"
+        ? "?map=1"
+        : "";
     if (pathsMatch(location.pathname, pathname) && location.search === search) return;
     navigate({ pathname, search }, { replace: true });
   }, [ready, groups, location.pathname, location.search, navigate]);
@@ -181,6 +188,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   const space = group?.spaces.find((item) => item.id === place.spaceId) ?? null;
   const device = space?.devices.find((item) => item.id === place.deviceId) ?? null;
   const messages = !!space && new URLSearchParams(location.search).get("messages") === "1";
+  const map = !!group && !space && new URLSearchParams(location.search).get("map") === "1";
   const canManageSpace = !!space?.privileges.includes("access");
 
   return (
@@ -230,6 +238,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
           {ready && group && !space && (
             <GroupCard
               group={group}
+              map={map}
               renaming={renaming}
               onRename={() => setRenaming((open) => !open)}
               onRenamed={async () => { setRenaming(false); await reload(); }}
@@ -237,6 +246,9 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
               onDeleted={async () => { await reload(); }}
               onChanged={() => reload()}
               onSpaceCreated={async (id) => { await reload(); go({ groupId: group.id, spaceId: id, deviceId: null }); }}
+              onShowMap={() => navigate({ pathname: placePath({ groupId: group.id, spaceId: null, deviceId: null }), search: "?map=1" })}
+              onShowDetails={() => navigate({ pathname: placePath({ groupId: group.id, spaceId: null, deviceId: null }), search: "" })}
+              onOpenDevice={(spaceId, deviceId) => go({ groupId: group.id, spaceId, deviceId })}
               onError={setError}
             />
           )}
@@ -414,8 +426,9 @@ function CreateSpace({ groupId, onCreated, onError }: { groupId: string; onCreat
   );
 }
 
-function GroupCard({ group, renaming, onRename, onRenamed, onCancelRename, onDeleted, onChanged, onSpaceCreated, onError }: {
+function GroupCard({ group, map, renaming, onRename, onRenamed, onCancelRename, onDeleted, onChanged, onSpaceCreated, onShowMap, onShowDetails, onOpenDevice, onError }: {
   group: GroupNode;
+  map: boolean;
   renaming: boolean;
   onRename: () => void;
   onRenamed: () => Promise<void>;
@@ -423,6 +436,9 @@ function GroupCard({ group, renaming, onRename, onRenamed, onCancelRename, onDel
   onDeleted: () => Promise<void>;
   onChanged: () => Promise<void>;
   onSpaceCreated: (id: string) => Promise<void>;
+  onShowMap: () => void;
+  onShowDetails: () => void;
+  onOpenDevice: (spaceId: string, deviceId: string) => void;
   onError: (value: string) => void;
 }) {
   const [addingSpace, setAddingSpace] = useState(false);
@@ -438,6 +454,8 @@ function GroupCard({ group, renaming, onRename, onRenamed, onCancelRename, onDel
         <div className="scene-title">
           <h2>{group.name}</h2>
           <div className="row actions">
+            <button type="button" className={map ? "secondary" : ""} onClick={onShowDetails}>Сведения</button>
+            <button type="button" className={map ? "" : "secondary"} onClick={onShowMap}>Карта</button>
             {canManage && <button type="button" onClick={() => setAddingSpace((open) => !open)}>{addingSpace ? "Закрыть" : "Новый тунель"}</button>}
             {canManage && <button type="button" className="secondary" onClick={onRename}>{renaming ? "Закрыть" : "Переименовать"}</button>}
             {group.mine && (
@@ -467,7 +485,8 @@ function GroupCard({ group, renaming, onRename, onRenamed, onCancelRename, onDel
           />
         )}
       </header>
-      <div className="scene-body">
+      <div className={map ? "scene-body map-on" : "scene-body"}>
+        {map ? <GroupMap group={group} onOpenDevice={onOpenDevice} /> : (
         <article className="sheet">
           <div className="stats">
             <Stat label="Тунели" value={String(tunnels)} />
@@ -495,6 +514,7 @@ function GroupCard({ group, renaming, onRename, onRenamed, onCancelRename, onDel
             </>
           )}
         </article>
+        )}
       </div>
     </>
   );

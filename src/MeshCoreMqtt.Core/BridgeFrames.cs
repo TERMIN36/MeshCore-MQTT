@@ -144,7 +144,7 @@ public static class BridgeFrames
             5 => "текст группы, содержимое зашифровано",
             6 => "данные группы, содержимое зашифровано",
             7 => "анонимный запрос, содержимое зашифровано",
-            8 => "путь, содержимое зашифровано",
+            8 => packet.Path.Length == 0 ? "путь" : $"путь, отметок {packet.Path.Length}",
             9 => "трассировка",
             10 => "составной пакет",
             11 => "управление",
@@ -166,6 +166,17 @@ public static class BridgeFrames
 
     public static string Place(double lat, double lon) =>
         lat.ToString("0.######", CultureInfo.InvariantCulture) + ", " + lon.ToString("0.######", CultureInfo.InvariantCulture);
+
+    public static IReadOnlyList<string> RouteChain(string publisherKey, byte route, byte[][] path)
+    {
+        var marks = new List<string>(path.Length + 1);
+        var flood = (route & 0x03) is 0 or 1;
+        if (!flood && publisherKey.Length > 0)
+            marks.Add(publisherKey.ToLowerInvariant());
+        foreach (var hash in path)
+            marks.Add(Convert.ToHexString(hash).ToLowerInvariant());
+        return marks;
+    }
 
     static bool TryHello(ReadOnlySpan<byte> body, out HelloBody hello)
     {
@@ -315,14 +326,21 @@ public static class BridgeFrames
             return false;
         var pathLen = raw[i++];
         var hashSize = (pathLen >> 6) + 1;
-        var pathBytes = (pathLen & 63) * hashSize;
+        var count = pathLen & 63;
+        var pathBytes = count * hashSize;
         if (hashSize == 4 || pathBytes > 64 || i + pathBytes > raw.Length)
             return false;
-        i += pathBytes;
+        var path = new byte[count][];
+        for (var n = 0; n < count; n++)
+        {
+            path[n] = raw.Slice(i, hashSize).ToArray();
+            i += hashSize;
+        }
+
         AdvertBody? advert = null;
         if (type == 4)
             TryAdvert(raw[i..], out advert);
-        packet = new MeshPacket(type, advert);
+        packet = new MeshPacket(type, (byte)route, path, advert);
         return true;
     }
 
@@ -426,7 +444,7 @@ public sealed record HeartbeatBody(
     double? Latitude,
     double? Longitude);
 
-public sealed record MeshPacket(byte PayloadType, AdvertBody? Advert);
+public sealed record MeshPacket(byte PayloadType, byte Route, byte[][] Path, AdvertBody? Advert);
 
 public sealed record AdvertBody(
     string PublicKey,

@@ -136,7 +136,8 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 devices,
                 activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>(),
                 feed = privileges.HasFlag(Privilege.View) ? FeedFor(space) : Array.Empty<object>(),
-                nodes = heard.Select(LiveObject)
+                nodes = heard.Select(LiveObject),
+                map = privileges.HasFlag(Privilege.View) ? MapFor(space) : EmptyMap
             });
         }
 
@@ -509,6 +510,30 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 name = row.Name,
                 summary = row.Summary
             });
+    }
+
+    static readonly object EmptyMap = new { nodes = Array.Empty<object>(), links = Array.Empty<object>() };
+
+    object MapFor(Space space)
+    {
+        var map = stats.Map(space.BrokerNodeId, MeshTopics.Prefix(space.Id));
+        return new
+        {
+            nodes = map.Nodes.Select(place => new
+            {
+                publicKey = place.PublicKey,
+                name = place.Name,
+                latitude = place.Latitude,
+                longitude = place.Longitude,
+                repeater = place.Repeater
+            }),
+            links = map.Links.Select(link => new
+            {
+                from = link.From,
+                to = link.To,
+                seen = link.Seen
+            })
+        };
     }
 
     List<RepeaterLive> NodesFor(Space space)
