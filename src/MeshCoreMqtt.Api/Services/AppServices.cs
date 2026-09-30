@@ -320,7 +320,7 @@ public sealed class StatsStore(LiveHub live)
             state.PacketsInbound = hello.PacketsInbound;
             state.Duplicates = hello.Duplicates;
             state.PublishErrors = hello.PublishErrors;
-            state.ApplyTelemetry(hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.Firmware);
+            state.ApplyTelemetry(hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.BatteryMv, hello.TempCx10, hello.Firmware);
         }
 
         if (message.Heartbeat is { } beat)
@@ -329,7 +329,7 @@ public sealed class StatsStore(LiveHub live)
             state.PacketsInbound = beat.PacketsInbound;
             state.Duplicates = beat.Duplicates;
             state.PublishErrors = beat.PublishErrors;
-            state.ApplyTelemetry(beat.NoiseFloor, beat.TxAirSecs, beat.RxAirSecs, beat.UptimeSecs, beat.TxQueue, beat.Firmware);
+            state.ApplyTelemetry(beat.NoiseFloor, beat.TxAirSecs, beat.RxAirSecs, beat.UptimeSecs, beat.TxQueue, beat.BatteryMv, beat.TempCx10, beat.Firmware);
             if (beat.Latitude is { } lat && beat.Longitude is { } lon)
             {
                 state.HelloLatitude = lat;
@@ -418,15 +418,19 @@ public sealed class RepeaterState
     public uint? RxAirSecs { get; set; }
     public uint? UptimeSecs { get; set; }
     public uint? TxQueue { get; set; }
+    public ushort? BatteryMv { get; set; }
+    public short? TempCx10 { get; set; }
     public string? Firmware { get; set; }
 
-    public void ApplyTelemetry(short noise, uint txAir, uint rxAir, uint uptime, uint queue, string firmware)
+    public void ApplyTelemetry(short noise, uint txAir, uint rxAir, uint uptime, uint queue, ushort batteryMv, short tempCx10, string firmware)
     {
         NoiseFloor = noise;
         TxAirSecs = txAir;
         RxAirSecs = rxAir;
         UptimeSecs = uptime;
         TxQueue = queue;
+        BatteryMv = batteryMv;
+        TempCx10 = tempCx10;
         Firmware = firmware;
     }
 
@@ -462,6 +466,8 @@ public sealed class RepeaterState
             RxAirSecs,
             UptimeSecs,
             TxQueue,
+            BatteryMv,
+            TempCx10,
             Firmware);
     }
 }
@@ -495,4 +501,6 @@ public sealed record RepeaterLive(
     uint? RxAirSecs,
     uint? UptimeSecs,
     uint? TxQueue,
+    ushort? BatteryMv,
+    short? TempCx10,
     string? Firmware);

@@ -6,6 +6,7 @@ namespace MeshCoreMqtt.Core;
 public static class BridgeFrames
 {
     public const int MaxBytes = 360;
+    public const short TemperatureMissing = -32768;
 
     public static bool TryDecode(ReadOnlySpan<byte> data, out BridgeMessage message)
     {
@@ -95,25 +96,29 @@ public static class BridgeFrames
             parts.Add(Place(lat, lon));
         parts.Add(hello.Forwarding ? "пересылка включена" : "пересылка выключена");
         parts.Add($"принято {hello.PacketsInbound}, отдано {hello.PacketsPublished}");
-        AppendTelemetry(parts, hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.Firmware);
+        AppendTelemetry(parts, hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.BatteryMv, hello.TempCx10, hello.Firmware);
         return string.Join(", ", parts);
     }
 
     static string DescribeHeartbeat(HeartbeatBody beat)
     {
         var parts = new List<string> { "пульс", $"принято {beat.PacketsInbound}, отдано {beat.PacketsPublished}" };
-        AppendTelemetry(parts, beat.NoiseFloor, beat.TxAirSecs, beat.RxAirSecs, beat.UptimeSecs, beat.TxQueue, beat.Firmware);
+        AppendTelemetry(parts, beat.NoiseFloor, beat.TxAirSecs, beat.RxAirSecs, beat.UptimeSecs, beat.TxQueue, beat.BatteryMv, beat.TempCx10, beat.Firmware);
         if (beat.Latitude is { } lat && beat.Longitude is { } lon)
             parts.Add(Place(lat, lon));
         return string.Join(", ", parts);
     }
 
-    static void AppendTelemetry(List<string> parts, short noise, uint txAir, uint rxAir, uint uptime, uint queue, string firmware)
+    static void AppendTelemetry(List<string> parts, short noise, uint txAir, uint rxAir, uint uptime, uint queue, ushort batteryMv, short tempCx10, string firmware)
     {
         parts.Add(noise == 0 ? "шум не измерен" : $"шум {noise} дБм");
         parts.Add($"эфир TX {txAir} с / RX {rxAir} с");
         parts.Add($"аптайм {uptime} с");
         parts.Add($"очередь {queue}");
+        parts.Add(batteryMv == 0 ? "батарея не измерена" : $"батарея {batteryMv} мВ");
+        parts.Add(tempCx10 == TemperatureMissing
+            ? "датчик не ответил"
+            : $"температура {(tempCx10 / 10d).ToString("0.0", CultureInfo.InvariantCulture)} °C");
         if (firmware.Length > 0)
             parts.Add("прошивка " + firmware);
     }
@@ -165,7 +170,7 @@ public static class BridgeFrames
     static bool TryHello(ReadOnlySpan<byte> body, out HelloBody hello)
     {
         hello = null!;
-        if (body.Length < 52)
+        if (body.Length < 56)
             return false;
         var i = 0;
         var freq = ReadU32(body.Slice(i, 4)); i += 4;
@@ -201,18 +206,18 @@ public static class BridgeFrames
         var inbound = ReadU32(body.Slice(i, 4)); i += 4;
         var dups = ReadU32(body.Slice(i, 4)); i += 4;
         var errors = ReadU32(body.Slice(i, 4)); i += 4;
-        if (!TryTelemetry(body, ref i, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var firmware) || i != body.Length)
+        if (!TryTelemetry(body, ref i, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var battery, out var temp, out var firmware) || i != body.Length)
             return false;
         hello = new HelloBody(
             freq, bw, sf, cr, tx, ant, lat, lon, forwarding, session, published, inbound, dups, errors,
-            noise, txAir, rxAir, uptime, queue, firmware);
+            noise, txAir, rxAir, uptime, queue, battery, temp, firmware);
         return true;
     }
 
     static bool TryHeartbeat(ReadOnlySpan<byte> body, out HeartbeatBody beat)
     {
         beat = null!;
-        if (body.Length < 40)
+        if (body.Length < 44)
             return false;
         var i = 0;
         var session = ReadU32(body.Slice(i, 4)); i += 4;
@@ -220,7 +225,7 @@ public static class BridgeFrames
         var inbound = ReadU32(body.Slice(i, 4)); i += 4;
         var dups = ReadU32(body.Slice(i, 4)); i += 4;
         var errors = ReadU32(body.Slice(i, 4)); i += 4;
-        if (!TryTelemetry(body, ref i, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var firmware))
+        if (!TryTelemetry(body, ref i, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var battery, out var temp, out var firmware))
             return false;
         if (i >= body.Length)
             return false;
@@ -237,7 +242,7 @@ public static class BridgeFrames
 
         if (i != body.Length)
             return false;
-        beat = new HeartbeatBody(session, published, inbound, dups, errors, noise, txAir, rxAir, uptime, queue, firmware, lat, lon);
+        beat = new HeartbeatBody(session, published, inbound, dups, errors, noise, txAir, rxAir, uptime, queue, battery, temp, firmware, lat, lon);
         return true;
     }
 
@@ -249,6 +254,8 @@ public static class BridgeFrames
         out uint rxAir,
         out uint uptime,
         out uint queue,
+        out ushort batteryMv,
+        out short tempCx10,
         out string firmware)
     {
         noise = 0;
@@ -256,14 +263,18 @@ public static class BridgeFrames
         rxAir = 0;
         uptime = 0;
         queue = 0;
+        batteryMv = 0;
+        tempCx10 = 0;
         firmware = "";
-        if (i + 19 > body.Length)
+        if (i + 23 > body.Length)
             return false;
         noise = ReadI16(body.Slice(i, 2)); i += 2;
         txAir = ReadU32(body.Slice(i, 4)); i += 4;
         rxAir = ReadU32(body.Slice(i, 4)); i += 4;
         uptime = ReadU32(body.Slice(i, 4)); i += 4;
         queue = ReadU32(body.Slice(i, 4)); i += 4;
+        batteryMv = ReadU16(body.Slice(i, 2)); i += 2;
+        tempCx10 = ReadI16(body.Slice(i, 2)); i += 2;
         var length = body[i++];
         if (length > 31 || i + length > body.Length)
             return false;
@@ -394,6 +405,8 @@ public sealed record HelloBody(
     uint RxAirSecs,
     uint UptimeSecs,
     uint TxQueue,
+    ushort BatteryMv,
+    short TempCx10,
     string Firmware);
 
 public sealed record HeartbeatBody(
@@ -407,6 +420,8 @@ public sealed record HeartbeatBody(
     uint RxAirSecs,
     uint UptimeSecs,
     uint TxQueue,
+    ushort BatteryMv,
+    short TempCx10,
     string Firmware,
     double? Latitude,
     double? Longitude);

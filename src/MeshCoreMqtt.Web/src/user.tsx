@@ -35,6 +35,8 @@ type Live = {
   rxAirSecs?: number | null;
   uptimeSecs?: number | null;
   txQueue?: number | null;
+  batteryMv?: number | null;
+  tempCx10?: number | null;
   firmware?: string | null;
 };
 type Device = { id: string; name: string; createdAt?: string; live?: Live | null };
@@ -548,7 +550,7 @@ function RepeaterFace({ name, live, createdAt }: { name: string; live?: Live | n
         <span className="muted">{advert ?? (live ? "На связи" : "Нет объявления")}</span>
       </span>
       <span className="muted">{coords ? `${live?.locationFromAdvert ? "объявление" : "координаты"} ${coords}` : "Координат нет"}</span>
-      <span className="muted">{live ? `на связи ${new Date(live.lastSeen).toLocaleString()}` : createdAt ? `создан ${new Date(createdAt).toLocaleString()}` : "батарея неизвестна"}</span>
+      <span className="muted">{cardStatus(live, createdAt)}</span>
     </>
   );
 }
@@ -591,7 +593,8 @@ function RepeaterSheet({ title, live, secret, onDelete }: {
       {!secret && onDelete && <p className="muted">Строка настройки показывается один раз, сразу после добавления репитера.</p>}
       <div className="stats">
         <Stat label={live?.locationFromAdvert ? "Координаты объявления" : "Координаты"} value={coords ?? "нет"} />
-        <Stat label="Батарея" value={EMPTY} />
+        <Stat label="Батарея" value={battery(live?.batteryMv)} />
+        <Stat label="Температура" value={temperature(live?.tempCx10)} />
         <Stat label="Шум, дБм" value={noiseFloor(live?.noiseFloor)} />
         <Stat label="Эфир TX / RX" value={airtime(live?.txAirSecs, live?.rxAirSecs)} />
       </div>
@@ -614,6 +617,8 @@ function RepeaterSheet({ title, live, secret, onDelete }: {
         ["Антенна", live?.antennaCm == null ? EMPTY : `${(live.antennaCm / 100).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} м`],
         ["Пересылка", live?.forwarding == null ? EMPTY : live.forwarding ? "включена" : "выключена"],
         ["Очередь передачи", count(live?.txQueue)],
+        ["Батарея", battery(live?.batteryMv)],
+        ["Температура", temperature(live?.tempCx10)],
         ["Аптайм", uptime(live?.uptimeSecs)],
         ["Прошивка", firmware(live?.firmware)],
         ["Принято / отдано", live?.packetsInbound == null && live?.packetsPublished == null ? EMPTY : `${live?.packetsInbound ?? 0} / ${live?.packetsPublished ?? 0}`],
@@ -726,6 +731,27 @@ function mhz(hz?: number | null) {
 function khz(hz?: number | null) {
   if (hz == null) return EMPTY;
   return `${(hz / 1e3).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} кГц`;
+}
+
+function cardStatus(live?: Live | null, createdAt?: string) {
+  if (!live) return createdAt ? `создан ${new Date(createdAt).toLocaleString()}` : "батарея неизвестна";
+  const charge = live.batteryMv == null ? "" : battery(live.batteryMv);
+  const heat = live.tempCx10 == null ? "" : temperature(live.tempCx10);
+  const sensed = [charge, heat].filter((item) => item && item !== EMPTY).join(" · ");
+  const seen = `на связи ${new Date(live.lastSeen).toLocaleString()}`;
+  return sensed ? `${sensed} · ${seen}` : seen;
+}
+
+function battery(mv?: number | null) {
+  if (mv == null) return EMPTY;
+  if (mv === 0) return "не измерена";
+  return `${(mv / 1000).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} В`;
+}
+
+function temperature(cx10?: number | null) {
+  if (cx10 == null) return EMPTY;
+  if (cx10 === -32768) return "не ответил";
+  return `${(cx10 / 10).toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C`;
 }
 
 function noiseFloor(value?: number | null) {

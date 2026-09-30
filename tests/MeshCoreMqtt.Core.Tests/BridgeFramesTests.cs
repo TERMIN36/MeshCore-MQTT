@@ -23,7 +23,7 @@ public class BridgeFramesTests
         PutU32(body, 9);
         PutU32(body, 1);
         PutU32(body, 0);
-        PutTelemetry(body, -110, 30, 90, 3600, 2, "1.9.0");
+        PutTelemetry(body, -110, 30, 90, 3600, 2, 3700, 365, "1.9.0");
         var raw = Envelope(2, "North", 7, 1700000000, body);
 
         Assert.True(BridgeFrames.TryDecode(raw, out var message));
@@ -44,11 +44,15 @@ public class BridgeFramesTests
         Assert.Equal(90u, hello.RxAirSecs);
         Assert.Equal(3600u, hello.UptimeSecs);
         Assert.Equal(2u, hello.TxQueue);
+        Assert.Equal((ushort)3700, hello.BatteryMv);
+        Assert.Equal((short)365, hello.TempCx10);
         Assert.Equal("1.9.0", hello.Firmware);
         var text = BridgeFrames.Describe(message);
         Assert.Contains("869.618 МГц", text);
         Assert.Contains("55.7558, 37.6176", text);
         Assert.Contains("шум -110 дБм", text);
+        Assert.Contains("батарея 3700 мВ", text);
+        Assert.Contains("температура 36.5 °C", text);
         Assert.Contains("прошивка 1.9.0", text);
     }
 
@@ -68,7 +72,7 @@ public class BridgeFramesTests
         PutU32(body, 0);
         PutU32(body, 0);
         PutU32(body, 0);
-        PutTelemetry(body, 0, 0, 0, 12, 0, "");
+        PutTelemetry(body, 0, 0, 0, 12, 0, 0, BridgeFrames.TemperatureMissing, "");
         var raw = Envelope(2, "N", 1, null, body);
 
         Assert.True(BridgeFrames.TryDecode(raw, out var message));
@@ -78,8 +82,13 @@ public class BridgeFramesTests
         Assert.Equal(-3, hello.TxDbm);
         Assert.Equal((short)0, hello.NoiseFloor);
         Assert.Equal(12u, hello.UptimeSecs);
+        Assert.Equal((ushort)0, hello.BatteryMv);
+        Assert.Equal(BridgeFrames.TemperatureMissing, hello.TempCx10);
         Assert.Equal("", hello.Firmware);
-        Assert.Contains("шум не измерен", BridgeFrames.Describe(message));
+        var text = BridgeFrames.Describe(message);
+        Assert.Contains("шум не измерен", text);
+        Assert.Contains("батарея не измерена", text);
+        Assert.Contains("датчик не ответил", text);
     }
 
     [Fact]
@@ -101,7 +110,7 @@ public class BridgeFramesTests
         Assert.False(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, old), out _));
 
         var extra = new List<byte>(old);
-        PutTelemetry(extra, -90, 1, 2, 3, 4, "a");
+        PutTelemetry(extra, -90, 1, 2, 3, 4, 0, 0, "a");
         extra.Add(0xFF);
         Assert.False(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, extra), out _));
     }
@@ -115,7 +124,7 @@ public class BridgeFramesTests
         PutU32(body, 5);
         PutU32(body, 1);
         PutU32(body, 0);
-        PutTelemetry(body, -105, 10, 20, 60, 0, "1.9.0");
+        PutTelemetry(body, -105, 10, 20, 60, 0, 3650, -15, "1.9.0");
         body.Add(0);
         var raw = Envelope(3, "R", 2, null, body);
 
@@ -127,9 +136,11 @@ public class BridgeFramesTests
         Assert.Equal(20u, beat.RxAirSecs);
         Assert.Equal(60u, beat.UptimeSecs);
         Assert.Equal(0u, beat.TxQueue);
+        Assert.Equal((ushort)3650, beat.BatteryMv);
+        Assert.Equal((short)-15, beat.TempCx10);
         Assert.Equal("1.9.0", beat.Firmware);
         Assert.Null(beat.Latitude);
-        Assert.Equal("пульс, принято 5, отдано 2, шум -105 дБм, эфир TX 10 с / RX 20 с, аптайм 60 с, очередь 0, прошивка 1.9.0", BridgeFrames.Describe(message));
+        Assert.Equal("пульс, принято 5, отдано 2, шум -105 дБм, эфир TX 10 с / RX 20 с, аптайм 60 с, очередь 0, батарея 3650 мВ, температура -1.5 °C, прошивка 1.9.0", BridgeFrames.Describe(message));
 
         var placedBody = new List<byte>(body);
         placedBody[^1] = 0x02;
@@ -153,8 +164,21 @@ public class BridgeFramesTests
         Assert.Equal(20, old.Count);
         Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, old), out _));
 
+        var shortOfMinimum = new List<byte>(old);
+        PutTelemetry(shortOfMinimum, -100, 1, 1, 1, 1, 0, 0, "");
+        Assert.Equal(43, shortOfMinimum.Count);
+        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, shortOfMinimum), out _));
+
+        var minimum = new List<byte>(old);
+        PutTelemetry(minimum, -100, 1, 1, 1, 1, 0, BridgeFrames.TemperatureMissing, "");
+        minimum.Add(0);
+        Assert.Equal(44, minimum.Count);
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 2, null, minimum), out var bare));
+        Assert.Equal((ushort)0, bare.Heartbeat!.BatteryMv);
+        Assert.Equal(BridgeFrames.TemperatureMissing, bare.Heartbeat.TempCx10);
+
         var exact = new List<byte>(old);
-        PutTelemetry(exact, -100, 1, 1, 1, 1, "v");
+        PutTelemetry(exact, -100, 1, 1, 1, 1, 4100, 210, "v");
         exact.Add(0);
         Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 2, null, exact), out _));
 
@@ -162,7 +186,7 @@ public class BridgeFramesTests
         Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 3, null, trailing), out _));
 
         var missingCoords = new List<byte>(old);
-        PutTelemetry(missingCoords, -100, 1, 1, 1, 1, "v");
+        PutTelemetry(missingCoords, -100, 1, 1, 1, 1, 0, 0, "v");
         missingCoords.Add(0x02);
         Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 4, null, missingCoords), out _));
 
@@ -172,6 +196,8 @@ public class BridgeFramesTests
         PutU32(longName, 0);
         PutU32(longName, 0);
         PutU32(longName, 0);
+        PutU16(longName, 0);
+        PutI16(longName, 0);
         longName.Add(32);
         Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 5, null, longName), out _));
     }
@@ -240,13 +266,21 @@ public class BridgeFramesTests
 
     static void PutI32(List<byte> dest, int value) => PutU32(dest, (uint)value);
 
-    static void PutTelemetry(List<byte> dest, short noise, uint txAir, uint rxAir, uint uptime, uint queue, string firmware)
+    static void PutU16(List<byte> dest, ushort value)
+    {
+        dest.Add((byte)value);
+        dest.Add((byte)(value >> 8));
+    }
+
+    static void PutTelemetry(List<byte> dest, short noise, uint txAir, uint rxAir, uint uptime, uint queue, ushort batteryMv, short tempCx10, string firmware)
     {
         PutI16(dest, noise);
         PutU32(dest, txAir);
         PutU32(dest, rxAir);
         PutU32(dest, uptime);
         PutU32(dest, queue);
+        PutU16(dest, batteryMv);
+        PutI16(dest, tempCx10);
         var text = System.Text.Encoding.ASCII.GetBytes(firmware);
         dest.Add((byte)text.Length);
         dest.AddRange(text);

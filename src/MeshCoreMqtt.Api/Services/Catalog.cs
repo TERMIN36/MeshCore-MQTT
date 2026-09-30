@@ -633,6 +633,8 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         rxAirSecs = live.RxAirSecs,
         uptimeSecs = live.UptimeSecs,
         txQueue = live.TxQueue,
+        batteryMv = live.BatteryMv,
+        tempCx10 = live.TempCx10,
         firmware = live.Firmware
     };
 
