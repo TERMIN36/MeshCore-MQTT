@@ -30,7 +30,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const response = await fetch(path, { ...options, headers });
   if (response.status === 401 && !path.endsWith("/auth/login")) {
     setToken(null);
-    if (location.pathname !== "/login") location.assign("/login");
+    sendToLogin();
     throw new Error("Нужно войти");
   }
   if (response.status === 204) return undefined as T;
@@ -50,7 +50,7 @@ export async function download(path: string, filename: string) {
   const response = await fetch(path, { headers });
   if (response.status === 401) {
     setToken(null);
-    if (location.pathname !== "/login") location.assign("/login");
+    sendToLogin();
     throw new Error("Нужно войти");
   }
   if (!response.ok) {
@@ -66,6 +66,20 @@ export async function download(path: string, filename: string) {
   link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+export function safeReturn(value: string | null, admin = false) {
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("//")) return null;
+  const path = value.split("?")[0];
+  if (path === "/app" || path.startsWith("/app/")) return value;
+  if (admin && (path === "/admin" || path.startsWith("/admin/"))) return value;
+  return null;
+}
+
+function sendToLogin() {
+  if (location.pathname === "/login") return;
+  const back = safeReturn(`${location.pathname}${location.search}`, location.pathname === "/admin" || location.pathname.startsWith("/admin/"));
+  location.assign(back ? `/login?next=${encodeURIComponent(back)}` : "/login");
 }
 
 function errorText(body: any) {

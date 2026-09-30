@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useState, type FormEvent } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { api, privilegeLabel } from "./api";
 import { subscribeLive } from "./live";
 import { SetupHint } from "./setup-guide";
@@ -29,6 +30,12 @@ type Live = {
   packetsInbound?: number | null;
   duplicates?: number | null;
   publishErrors?: number | null;
+  noiseFloor?: number | null;
+  txAirSecs?: number | null;
+  rxAirSecs?: number | null;
+  uptimeSecs?: number | null;
+  txQueue?: number | null;
+  firmware?: string | null;
 };
 type Device = { id: string; name: string; createdAt?: string; live?: Live | null };
 type Activity = { topic: string; messagesPerMinute: number; lastSeen: string };
@@ -38,6 +45,41 @@ type SpaceNode = { id: string; name: string; privileges: string[]; devices: Devi
 type GroupNode = { id: string; name: string; owner: string; ownerEmail: string; createdAt: string; mine: boolean; privileges: string[]; spaces: SpaceNode[]; spaceChoices: SpaceChoice[]; grants: Grant[] };
 
 const EMPTY = "—";
+
+type Place = { groupId: string | null; spaceId: string | null; deviceId: string | null };
+
+function readPlace(pathname: string): Place {
+  const match = /^\/app(?:\/groups\/([^/]+)(?:\/spaces\/([^/]+)(?:\/devices\/([^/]+))?)?)?\/?$/.exec(pathname);
+  if (!match) return { groupId: null, spaceId: null, deviceId: null };
+  return { groupId: decodePart(match[1]), spaceId: decodePart(match[2]), deviceId: decodePart(match[3]) };
+}
+
+function decodePart(value: string | undefined): string | null {
+  if (!value) return null;
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+function placePath(place: Place) {
+  if (!place.groupId) return "/app";
+  let path = `/app/groups/${encodeURIComponent(place.groupId)}`;
+  if (!place.spaceId) return path;
+  path += `/spaces/${encodeURIComponent(place.spaceId)}`;
+  if (!place.deviceId) return path;
+  return `${path}/devices/${encodeURIComponent(place.deviceId)}`;
+}
+
+function resolvePlace(groups: GroupNode[], wanted: Place): Place {
+  const group = groups.find((item) => item.id === wanted.groupId) ?? groups[0] ?? null;
+  const space = group && wanted.groupId === group.id && wanted.spaceId
+    ? group.spaces.find((item) => item.id === wanted.spaceId) ?? null
+    : null;
+  const device = space && wanted.deviceId ? space.devices.find((item) => item.id === wanted.deviceId) ?? null : null;
+  return { groupId: group?.id ?? null, spaceId: space?.id ?? null, deviceId: device?.id ?? null };
+}
+
+function pathsMatch(left: string, right: string) {
+  try { return decodeURI(left) === decodeURI(right); } catch { return left === right; }
+}
 
 export function PanelBar({ email }: { email?: string }) {
   return (
@@ -52,70 +94,71 @@ export function PanelBar({ email }: { email?: string }) {
 }
 
 export function GroupsPage({ email, onLogout }: { email: string; onLogout: () => void }) {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [groups, setGroups] = useState<GroupNode[]>([]);
-  const [groupId, setGroupId] = useState<string | null>(null);
-  const [spaceId, setSpaceId] = useState<string | null>(null);
-  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
   const [secrets, setSecrets] = useState<Record<string, Login>>({});
   const [name, setName] = useState("");
   const [addingGroup, setAddingGroup] = useState(false);
   const [addingDevice, setAddingDevice] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [messages, setMessages] = useState(false);
   const [confirmSpace, setConfirmSpace] = useState(false);
   const [error, setError] = useState("");
 
-  const groupIdRef = useRef(groupId);
-  const spaceIdRef = useRef(spaceId);
-  const deviceIdRef = useRef(deviceId);
-  groupIdRef.current = groupId;
-  spaceIdRef.current = spaceId;
-  deviceIdRef.current = deviceId;
-
-  function applyTree(tree: GroupNode[], nextGroupId?: string | null, nextSpaceId?: string | null, nextDeviceId?: string | null) {
-    setGroups(tree);
-    const group = tree.find((item) => item.id === (nextGroupId === undefined ? groupIdRef.current : nextGroupId))
-      ?? (nextGroupId ? null : tree[0])
-      ?? null;
-    setGroupId(group?.id ?? null);
-    const wantedSpace = nextSpaceId === undefined ? spaceIdRef.current : nextSpaceId;
-    const space = wantedSpace ? group?.spaces.find((item) => item.id === wantedSpace) ?? null : null;
-    setSpaceId(space?.id ?? null);
-    const wantedDevice = nextDeviceId === undefined ? deviceIdRef.current : nextDeviceId;
-    const device = wantedDevice ? space?.devices.find((item) => item.id === wantedDevice) ?? null : null;
-    setDeviceId(device?.id ?? null);
-  }
-
-  async function load(nextGroupId?: string | null, nextSpaceId?: string | null, nextDeviceId?: string | null) {
-    applyTree(await api<GroupNode[]>("/api/tree"), nextGroupId, nextSpaceId, nextDeviceId);
-  }
-  const loadRef = useRef(load);
-  loadRef.current = load;
-  useEffect(() => { load().catch((err) => setError(err.message)); }, []);
-  useEffect(() => subscribeLive(["tree"], {
-    onTree: (tree) => applyTree(tree as GroupNode[])
-  }), []);
-
-  function openSpace(nextGroupId: string, nextSpaceId: string) {
-    const group = groups.find((item) => item.id === nextGroupId);
-    const space = group?.spaces.find((item) => item.id === nextSpaceId);
-    setGroupId(nextGroupId);
-    setSpaceId(nextSpaceId);
-    setDeviceId(space?.devices[0]?.id ?? null);
+  const requested = readPlace(location.pathname);
+  const place = ready ? resolvePlace(groups, requested) : requested;
+  const placeKey = `${requested.groupId ?? ""}\n${requested.spaceId ?? ""}`;
+  const [seenPlace, setSeenPlace] = useState(placeKey);
+  if (seenPlace !== placeKey) {
+    setSeenPlace(placeKey);
     setRenaming(false);
     setAddingDevice(false);
-    setMessages(false);
     setConfirmSpace(false);
+  }
+
+  function go(next: Place, messagesOn = false) {
+    const pathname = placePath(next);
+    const search = messagesOn && next.spaceId ? "?messages=1" : "";
+    if (pathsMatch(location.pathname, pathname) && location.search === search) return;
+    navigate({ pathname, search });
+  }
+
+  function takeTree(tree: GroupNode[]) {
+    setGroups(tree);
+    setReady(true);
+  }
+
+  async function reload() {
+    takeTree(await api<GroupNode[]>("/api/tree"));
+  }
+
+  useEffect(() => {
+    reload().catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : "Не удалось загрузить");
+      setReady(true);
+    });
+  }, []);
+  useEffect(() => subscribeLive(["tree"], { onTree: (tree) => takeTree(tree as GroupNode[]) }), []);
+  useEffect(() => {
+    if (!ready) return;
+    const current = readPlace(location.pathname);
+    const resolved = resolvePlace(groups, current);
+    const pathname = placePath(resolved);
+    const messagesOn = !!resolved.spaceId && new URLSearchParams(location.search).get("messages") === "1";
+    const search = messagesOn ? "?messages=1" : "";
+    if (pathsMatch(location.pathname, pathname) && location.search === search) return;
+    navigate({ pathname, search }, { replace: true });
+  }, [ready, groups, location.pathname, location.search, navigate]);
+
+  function openSpace(nextGroupId: string, nextSpaceId: string) {
+    const nextGroup = groups.find((item) => item.id === nextGroupId);
+    const nextSpace = nextGroup?.spaces.find((item) => item.id === nextSpaceId);
+    go({ groupId: nextGroupId, spaceId: nextSpaceId, deviceId: nextSpace?.devices[0]?.id ?? null });
   }
 
   function openGroup(id: string) {
-    setGroupId(id);
-    setSpaceId(null);
-    setDeviceId(null);
-    setRenaming(false);
-    setAddingDevice(false);
-    setMessages(false);
-    setConfirmSpace(false);
+    go({ groupId: id, spaceId: null, deviceId: null });
   }
 
   async function createGroup(event: FormEvent) {
@@ -125,15 +168,17 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
       const created = await api<{ id: string }>("/api/groups", { method: "POST", body: JSON.stringify({ name }) });
       setName("");
       setAddingGroup(false);
-      await load(created.id, null, null);
+      await reload();
+      go({ groupId: created.id, spaceId: null, deviceId: null });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Не удалось создать группу");
     }
   }
 
-  const group = groups.find((item) => item.id === groupId) ?? null;
-  const space = group?.spaces.find((item) => item.id === spaceId) ?? null;
-  const device = space?.devices.find((item) => item.id === deviceId) ?? null;
+  const group = groups.find((item) => item.id === place.groupId) ?? null;
+  const space = group?.spaces.find((item) => item.id === place.spaceId) ?? null;
+  const device = space?.devices.find((item) => item.id === place.deviceId) ?? null;
+  const messages = !!space && new URLSearchParams(location.search).get("messages") === "1";
   const canManageSpace = !!space?.privileges.includes("access");
 
   return (
@@ -153,7 +198,8 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
             </button>
           </div>
           <div className="tree-scroll">
-            {groups.length === 0 && <p className="muted">Групп пока нет.</p>}
+            {!ready && <p className="muted">Загрузка…</p>}
+            {ready && groups.length === 0 && <p className="muted">Групп пока нет.</p>}
             {groups.map((item) => (
               <div key={item.id}>
                 <div className="tree-group-row">
@@ -177,21 +223,22 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
           </div>
         </aside>
         <section className="scene">
-          {!group && <div className="scene-body"><p className="muted">Создайте группу слева.</p></div>}
-          {group && !space && (
+          {!ready && <div className="scene-body"><p className="muted">Загрузка…</p></div>}
+          {ready && !group && <div className="scene-body"><p className="muted">Создайте группу слева.</p></div>}
+          {ready && group && !space && (
             <GroupCard
               group={group}
               renaming={renaming}
               onRename={() => setRenaming((open) => !open)}
-              onRenamed={async () => { setRenaming(false); await load(group.id, null, null); }}
+              onRenamed={async () => { setRenaming(false); await reload(); }}
               onCancelRename={() => setRenaming(false)}
-              onDeleted={async () => { await load(null, null, null); }}
-              onChanged={() => load(group.id, null, null)}
-              onSpaceCreated={async (id) => { await load(group.id, id, null); }}
+              onDeleted={async () => { await reload(); }}
+              onChanged={() => reload()}
+              onSpaceCreated={async (id) => { await reload(); go({ groupId: group.id, spaceId: id, deviceId: null }); }}
               onError={setError}
             />
           )}
-          {group && space && (
+          {ready && group && space && (
             <>
               <header className="scene-head">
                 <div className="scene-title">
@@ -204,7 +251,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                       <button type="button" className="secondary" onClick={() => setRenaming((open) => !open)}>Переименовать</button>
                     )}
                     {space.privileges.includes("view") && (
-                      <button type="button" className="ghost" onClick={() => setMessages((open) => !open)}>Сообщения</button>
+                      <button type="button" className="ghost" onClick={() => go({ groupId: group.id, spaceId: space.id, deviceId: device?.id ?? null }, !messages)}>Сообщения</button>
                     )}
                     {canManageSpace && (
                       <button type="button" className="ghost danger" onClick={() => setConfirmSpace(true)}>Удалить</button>
@@ -214,7 +261,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                 {canManageSpace && renaming && (
                   <RenameSpace
                     space={space}
-                    onSaved={async () => { setRenaming(false); await load(group.id, space.id); }}
+                    onSaved={async () => { setRenaming(false); await reload(); }}
                     onCancel={() => setRenaming(false)}
                     onError={setError}
                   />
@@ -229,7 +276,8 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                       onCreated={async (created) => {
                         setSecrets((current) => ({ ...current, [created.id]: created }));
                         setAddingDevice(false);
-                        await load(group.id, space.id, created.id);
+                        await reload();
+                        go({ groupId: group.id, spaceId: space.id, deviceId: created.id }, messages);
                       }}
                       onError={setError}
                     />
@@ -253,7 +301,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                           key={item.id}
                           type="button"
                           className={item.id === device?.id ? "repeater selected" : "repeater"}
-                          onClick={() => setDeviceId(item.id)}
+                          onClick={() => go({ groupId: group.id, spaceId: space.id, deviceId: item.id }, messages)}
                         >
                           <RepeaterFace name={item.name} live={item.live} createdAt={item.createdAt} />
                         </button>
@@ -274,7 +322,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                           delete next[device.id];
                           return next;
                         });
-                        await load(group.id, space.id, null);
+                        await reload();
                       } catch (err) {
                         setError(err instanceof Error ? err.message : "Не удалось удалить репитер");
                         throw err;
@@ -313,7 +361,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
             try {
               await api(`/api/spaces/${space.id}`, { method: "DELETE" });
               setConfirmSpace(false);
-              await load(group.id, null, null);
+              await reload();
             } catch (err) {
               setError(err instanceof Error ? err.message : "Не удалось удалить тунель");
             }
@@ -492,13 +540,11 @@ function GroupRename({ group, onChanged, onCancel, onError }: { group: GroupNode
 
 function RepeaterFace({ name, live, createdAt }: { name: string; live?: Live | null; createdAt?: string }) {
   const coords = place(live?.latitude, live?.longitude);
-  const advert = live?.advertType != null
-    ? `${advertLabel(live.advertType)}${live.advertName ? ` «${live.advertName}»` : ""}`
-    : null;
+  const advert = live?.advertType != null ? advertLabel(live.advertType) : null;
   return (
     <>
       <span className="repeater-top">
-        <strong>{name}</strong>
+        <strong title={name}>{name}</strong>
         <span className="muted">{advert ?? (live ? "На связи" : "Нет объявления")}</span>
       </span>
       <span className="muted">{coords ? `${live?.locationFromAdvert ? "объявление" : "координаты"} ${coords}` : "Координат нет"}</span>
@@ -546,8 +592,8 @@ function RepeaterSheet({ title, live, secret, onDelete }: {
       <div className="stats">
         <Stat label={live?.locationFromAdvert ? "Координаты объявления" : "Координаты"} value={coords ?? "нет"} />
         <Stat label="Батарея" value={EMPTY} />
-        <Stat label="Шум, дБм" value={EMPTY} />
-        <Stat label="Эфир" value={EMPTY} />
+        <Stat label="Шум, дБм" value={noiseFloor(live?.noiseFloor)} />
+        <Stat label="Эфир TX / RX" value={airtime(live?.txAirSecs, live?.rxAirSecs)} />
       </div>
       <h2>Объявление</h2>
       <Fields rows={[
@@ -567,9 +613,9 @@ function RepeaterSheet({ title, live, secret, onDelete }: {
         ["Мощность", live?.txDbm == null ? EMPTY : `${live.txDbm} дБм`],
         ["Антенна", live?.antennaCm == null ? EMPTY : `${(live.antennaCm / 100).toLocaleString("ru-RU", { maximumFractionDigits: 2 })} м`],
         ["Пересылка", live?.forwarding == null ? EMPTY : live.forwarding ? "включена" : "выключена"],
-        ["Очередь передачи", EMPTY],
-        ["Аптайм", EMPTY],
-        ["Прошивка", EMPTY],
+        ["Очередь передачи", count(live?.txQueue)],
+        ["Аптайм", uptime(live?.uptimeSecs)],
+        ["Прошивка", firmware(live?.firmware)],
         ["Принято / отдано", live?.packetsInbound == null && live?.packetsPublished == null ? EMPTY : `${live?.packetsInbound ?? 0} / ${live?.packetsPublished ?? 0}`],
         ["Дубли / ошибки публикации", live?.duplicates == null && live?.publishErrors == null ? EMPTY : `${live?.duplicates ?? 0} / ${live?.publishErrors ?? 0}`]
       ]} />
@@ -596,21 +642,52 @@ function Fields({ rows }: { rows: [string, string][] }) {
 
 function ConfigCard({ login }: { login: { name: string; config: string } }) {
   const [done, setDone] = useState(false);
+  const [copyError, setCopyError] = useState("");
   const titled = login.name && login.name !== "Репитер" ? ` «${login.name}»` : "";
   return (
     <div className="secret">
       <p className="muted">Строка для веб-интерфейса репитера{titled}: адрес, логин, пароль и сертификат. Вставьте её один раз — повторно пароль не показывается.</p>
       <pre className="cli">{login.config}</pre>
       <div className="row">
-        <button type="button" onClick={async () => {
-          await navigator.clipboard.writeText(login.config);
-          setDone(true);
-          window.setTimeout(() => setDone(false), 1200);
+        <button type="button" onClick={() => {
+          setCopyError("");
+          copyText(login.config).then(() => {
+            setDone(true);
+            window.setTimeout(() => setDone(false), 1200);
+          }).catch(() => setCopyError("Не удалось скопировать строку"));
         }}>{done ? "Скопировано" : "Копировать настройку"}</button>
         <SetupHint />
       </div>
+      {copyError && <p className="error">{copyError}</p>}
     </div>
   );
+}
+
+function copyText(value: string) {
+  if (window.isSecureContext && navigator.clipboard?.writeText)
+    return navigator.clipboard.writeText(value).catch(() => copyWithSelection(value));
+  try {
+    copyWithSelection(value);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  return Promise.resolve();
+}
+
+function copyWithSelection(value: string) {
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "0";
+  area.style.left = "0";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  area.setSelectionRange(0, value.length);
+  const copied = document.execCommand("copy");
+  document.body.removeChild(area);
+  if (!copied) throw new Error("Не удалось скопировать");
 }
 
 function MessageFeed({ rows }: { rows: FeedItem[] }) {
@@ -649,6 +726,40 @@ function mhz(hz?: number | null) {
 function khz(hz?: number | null) {
   if (hz == null) return EMPTY;
   return `${(hz / 1e3).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} кГц`;
+}
+
+function noiseFloor(value?: number | null) {
+  if (value == null) return EMPTY;
+  if (value === 0) return "не измерен";
+  return String(value);
+}
+
+function airtime(tx?: number | null, rx?: number | null) {
+  if (tx == null && rx == null) return EMPTY;
+  return `${tx ?? 0} / ${rx ?? 0} с`;
+}
+
+function uptime(seconds?: number | null) {
+  if (seconds == null) return EMPTY;
+  const total = Math.max(0, Math.floor(seconds));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = total % 60;
+  if (days > 0) return hours > 0 ? `${days} д ${hours} ч` : `${days} д`;
+  if (hours > 0) return minutes > 0 ? `${hours} ч ${minutes} мин` : `${hours} ч`;
+  if (minutes > 0) return rest > 0 ? `${minutes} мин ${rest} с` : `${minutes} мин`;
+  return `${rest} с`;
+}
+
+function count(value?: number | null) {
+  if (value == null) return EMPTY;
+  return String(value);
+}
+
+function firmware(value?: string | null) {
+  const text = value?.trim() ?? "";
+  return text.length > 0 ? text : EMPTY;
 }
 
 function shortKey(key: string) {

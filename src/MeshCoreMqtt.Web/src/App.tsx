@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
-import { api, setToken, token, type User } from "./api";
+import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { api, safeReturn, setToken, token, type User } from "./api";
 import { AccountPage, AccountsPage, ActivityPage, CertificatePage, NodesPage, SharingPage } from "./admin";
 import { GroupsPage, PanelBar } from "./user";
 
@@ -16,16 +16,29 @@ export function App() {
   if (!ready) return <main>Загрузка…</main>;
   return (
     <Routes>
-      <Route path="/login" element={<Login onUser={setUser} />} />
-      <Route path="/app/*" element={user ? <UserShell email={user.email} /> : <Navigate to="/login" />} />
-      <Route path="/admin/*" element={user?.admin ? <AdminShell user={user} /> : <Navigate to={user ? "/app" : "/login"} />} />
-      <Route path="*" element={<Navigate to={user ? (user.admin ? "/admin" : "/app") : "/login"} />} />
+      <Route path="/login" element={<LoginGate user={user} onUser={setUser} />} />
+      <Route path="/app/*" element={user ? <UserShell email={user.email} /> : <Navigate to={loginTarget()} replace />} />
+      <Route path="/admin/*" element={user?.admin ? <AdminShell user={user} /> : <Navigate to={user ? "/app" : loginTarget()} replace />} />
+      <Route path="*" element={<Navigate to={user ? (user.admin ? "/admin" : "/app") : "/login"} replace />} />
     </Routes>
   );
 }
 
+function loginTarget() {
+  const next = safeReturn(`${location.pathname}${location.search}`, location.pathname === "/admin" || location.pathname.startsWith("/admin/"));
+  return next ? `/login?next=${encodeURIComponent(next)}` : "/login";
+}
+
+function LoginGate({ user, onUser }: { user: User | null; onUser: (user: User) => void }) {
+  const location = useLocation();
+  const next = safeReturn(new URLSearchParams(location.search).get("next"), !!user?.admin);
+  if (user) return <Navigate to={next ?? (user.admin ? "/admin" : "/app")} replace />;
+  return <Login onUser={onUser} />;
+}
+
 function Login({ onUser }: { onUser: (user: User) => void }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState("admin@localhost");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -40,7 +53,8 @@ function Login({ onUser }: { onUser: (user: User) => void }) {
       });
       setToken(result.token);
       onUser(result.user);
-      navigate(result.user.admin ? "/admin" : "/app");
+      const next = safeReturn(new URLSearchParams(location.search).get("next"), result.user.admin);
+      navigate(next ?? (result.user.admin ? "/admin" : "/app"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ошибка входа");
     }
@@ -64,11 +78,7 @@ function Login({ onUser }: { onUser: (user: User) => void }) {
 function UserShell({ email }: { email: string }) {
   return (
     <main className="app-main">
-      <Routes>
-        <Route index element={<GroupsPage email={email} onLogout={() => { setToken(null); location.assign("/login"); }} />} />
-        <Route path="groups/:id" element={<Navigate to="/app" replace />} />
-        <Route path="spaces/:id" element={<Navigate to="/app" replace />} />
-      </Routes>
+      <GroupsPage email={email} onLogout={() => { setToken(null); location.assign("/login"); }} />
     </main>
   );
 }
