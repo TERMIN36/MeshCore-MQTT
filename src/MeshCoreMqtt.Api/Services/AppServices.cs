@@ -320,6 +320,7 @@ public sealed class StatsStore(LiveHub live)
             state.PacketsInbound = hello.PacketsInbound;
             state.Duplicates = hello.Duplicates;
             state.PublishErrors = hello.PublishErrors;
+            state.ApplyTelemetry(hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.Firmware);
         }
 
         if (message.Heartbeat is { } beat)
@@ -328,6 +329,12 @@ public sealed class StatsStore(LiveHub live)
             state.PacketsInbound = beat.PacketsInbound;
             state.Duplicates = beat.Duplicates;
             state.PublishErrors = beat.PublishErrors;
+            state.ApplyTelemetry(beat.NoiseFloor, beat.TxAirSecs, beat.RxAirSecs, beat.UptimeSecs, beat.TxQueue, beat.Firmware);
+            if (beat.Latitude is { } lat && beat.Longitude is { } lon)
+            {
+                state.HelloLatitude = lat;
+                state.HelloLongitude = lon;
+            }
         }
 
         if (message.Packet?.Advert is { } advert &&
@@ -406,6 +413,22 @@ public sealed class RepeaterState
     public uint? PacketsInbound { get; set; }
     public uint? Duplicates { get; set; }
     public uint? PublishErrors { get; set; }
+    public short? NoiseFloor { get; set; }
+    public uint? TxAirSecs { get; set; }
+    public uint? RxAirSecs { get; set; }
+    public uint? UptimeSecs { get; set; }
+    public uint? TxQueue { get; set; }
+    public string? Firmware { get; set; }
+
+    public void ApplyTelemetry(short noise, uint txAir, uint rxAir, uint uptime, uint queue, string firmware)
+    {
+        NoiseFloor = noise;
+        TxAirSecs = txAir;
+        RxAirSecs = rxAir;
+        UptimeSecs = uptime;
+        TxQueue = queue;
+        Firmware = firmware;
+    }
 
     public RepeaterLive View()
     {
@@ -433,7 +456,13 @@ public sealed class RepeaterState
             PacketsPublished,
             PacketsInbound,
             Duplicates,
-            PublishErrors);
+            PublishErrors,
+            NoiseFloor,
+            TxAirSecs,
+            RxAirSecs,
+            UptimeSecs,
+            TxQueue,
+            Firmware);
     }
 }
 
@@ -460,4 +489,10 @@ public sealed record RepeaterLive(
     uint? PacketsPublished,
     uint? PacketsInbound,
     uint? Duplicates,
-    uint? PublishErrors);
+    uint? PublishErrors,
+    short? NoiseFloor,
+    uint? TxAirSecs,
+    uint? RxAirSecs,
+    uint? UptimeSecs,
+    uint? TxQueue,
+    string? Firmware);

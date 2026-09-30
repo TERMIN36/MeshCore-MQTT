@@ -627,7 +627,13 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         packetsPublished = live.PacketsPublished,
         packetsInbound = live.PacketsInbound,
         duplicates = live.Duplicates,
-        publishErrors = live.PublishErrors
+        publishErrors = live.PublishErrors,
+        noiseFloor = live.NoiseFloor,
+        txAirSecs = live.TxAirSecs,
+        rxAirSecs = live.RxAirSecs,
+        uptimeSecs = live.UptimeSecs,
+        txQueue = live.TxQueue,
+        firmware = live.Firmware
     };
 
     async Task<Group> LoadGroup(Guid id, CancellationToken ct) =>

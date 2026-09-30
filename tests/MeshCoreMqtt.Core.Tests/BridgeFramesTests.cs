@@ -23,6 +23,7 @@ public class BridgeFramesTests
         PutU32(body, 9);
         PutU32(body, 1);
         PutU32(body, 0);
+        PutTelemetry(body, -110, 30, 90, 3600, 2, "1.9.0");
         var raw = Envelope(2, "North", 7, 1700000000, body);
 
         Assert.True(BridgeFrames.TryDecode(raw, out var message));
@@ -38,12 +39,75 @@ public class BridgeFramesTests
         Assert.Equal(37.6176, hello.Longitude!.Value, 6);
         Assert.True(hello.Forwarding);
         Assert.Equal(4u, hello.PacketsPublished);
-        Assert.Contains("869.618 МГц", BridgeFrames.Describe(message));
-        Assert.Contains("55.7558, 37.6176", BridgeFrames.Describe(message));
+        Assert.Equal((short)-110, hello.NoiseFloor);
+        Assert.Equal(30u, hello.TxAirSecs);
+        Assert.Equal(90u, hello.RxAirSecs);
+        Assert.Equal(3600u, hello.UptimeSecs);
+        Assert.Equal(2u, hello.TxQueue);
+        Assert.Equal("1.9.0", hello.Firmware);
+        var text = BridgeFrames.Describe(message);
+        Assert.Contains("869.618 МГц", text);
+        Assert.Contains("55.7558, 37.6176", text);
+        Assert.Contains("шум -110 дБм", text);
+        Assert.Contains("прошивка 1.9.0", text);
     }
 
     [Fact]
-    public void Heartbeat_is_five_counters()
+    public void Hello_without_optional_fields_still_reads_telemetry()
+    {
+        var body = new List<byte>();
+        PutU32(body, 868000000);
+        PutU32(body, 125000);
+        body.Add(7);
+        body.Add(5);
+        body.Add(0xFD);
+        body.Add(0);
+        body.Add(0);
+        PutU32(body, 1);
+        PutU32(body, 0);
+        PutU32(body, 0);
+        PutU32(body, 0);
+        PutU32(body, 0);
+        PutTelemetry(body, 0, 0, 0, 12, 0, "");
+        var raw = Envelope(2, "N", 1, null, body);
+
+        Assert.True(BridgeFrames.TryDecode(raw, out var message));
+        var hello = message.Hello!;
+        Assert.Null(hello.AntennaCm);
+        Assert.Null(hello.Latitude);
+        Assert.Equal(-3, hello.TxDbm);
+        Assert.Equal((short)0, hello.NoiseFloor);
+        Assert.Equal(12u, hello.UptimeSecs);
+        Assert.Equal("", hello.Firmware);
+        Assert.Contains("шум не измерен", BridgeFrames.Describe(message));
+    }
+
+    [Fact]
+    public void Hello_rejects_short_or_trailing_body()
+    {
+        var old = new List<byte>();
+        PutU32(old, 868000000);
+        PutU32(old, 125000);
+        old.Add(7);
+        old.Add(5);
+        old.Add(10);
+        old.Add(0);
+        old.Add(1);
+        PutU32(old, 1);
+        PutU32(old, 0);
+        PutU32(old, 0);
+        PutU32(old, 0);
+        PutU32(old, 0);
+        Assert.False(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, old), out _));
+
+        var extra = new List<byte>(old);
+        PutTelemetry(extra, -90, 1, 2, 3, 4, "a");
+        extra.Add(0xFF);
+        Assert.False(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, extra), out _));
+    }
+
+    [Fact]
+    public void Heartbeat_carries_telemetry_and_optional_coordinates()
     {
         var body = new List<byte>();
         PutU32(body, 8);
@@ -51,11 +115,65 @@ public class BridgeFramesTests
         PutU32(body, 5);
         PutU32(body, 1);
         PutU32(body, 0);
+        PutTelemetry(body, -105, 10, 20, 60, 0, "1.9.0");
+        body.Add(0);
         var raw = Envelope(3, "R", 2, null, body);
 
         Assert.True(BridgeFrames.TryDecode(raw, out var message));
-        Assert.Equal(5u, message.Heartbeat!.PacketsInbound);
-        Assert.Equal("пульс, принято 5, отдано 2", BridgeFrames.Describe(message));
+        var beat = message.Heartbeat!;
+        Assert.Equal(5u, beat.PacketsInbound);
+        Assert.Equal((short)-105, beat.NoiseFloor);
+        Assert.Equal(10u, beat.TxAirSecs);
+        Assert.Equal(20u, beat.RxAirSecs);
+        Assert.Equal(60u, beat.UptimeSecs);
+        Assert.Equal(0u, beat.TxQueue);
+        Assert.Equal("1.9.0", beat.Firmware);
+        Assert.Null(beat.Latitude);
+        Assert.Equal("пульс, принято 5, отдано 2, шум -105 дБм, эфир TX 10 с / RX 20 с, аптайм 60 с, очередь 0, прошивка 1.9.0", BridgeFrames.Describe(message));
+
+        var placedBody = new List<byte>(body);
+        placedBody[^1] = 0x02;
+        PutI32(placedBody, 557558000);
+        PutI32(placedBody, 376176000);
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 3, null, placedBody), out var placed));
+        Assert.Equal(55.7558, placed.Heartbeat!.Latitude!.Value, 6);
+        Assert.Equal(37.6176, placed.Heartbeat.Longitude!.Value, 6);
+        Assert.Contains("55.7558, 37.6176", BridgeFrames.Describe(placed));
+    }
+
+    [Fact]
+    public void Heartbeat_rejects_old_short_and_unbalanced_bodies()
+    {
+        var old = new List<byte>();
+        PutU32(old, 8);
+        PutU32(old, 2);
+        PutU32(old, 5);
+        PutU32(old, 1);
+        PutU32(old, 0);
+        Assert.Equal(20, old.Count);
+        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, old), out _));
+
+        var exact = new List<byte>(old);
+        PutTelemetry(exact, -100, 1, 1, 1, 1, "v");
+        exact.Add(0);
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 2, null, exact), out _));
+
+        var trailing = new List<byte>(exact) { 0 };
+        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 3, null, trailing), out _));
+
+        var missingCoords = new List<byte>(old);
+        PutTelemetry(missingCoords, -100, 1, 1, 1, 1, "v");
+        missingCoords.Add(0x02);
+        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 4, null, missingCoords), out _));
+
+        var longName = new List<byte>(old);
+        PutI16(longName, -90);
+        PutU32(longName, 0);
+        PutU32(longName, 0);
+        PutU32(longName, 0);
+        PutU32(longName, 0);
+        longName.Add(32);
+        Assert.False(BridgeFrames.TryDecode(Envelope(3, "R", 5, null, longName), out _));
     }
 
     [Fact]
@@ -121,4 +239,16 @@ public class BridgeFramesTests
     }
 
     static void PutI32(List<byte> dest, int value) => PutU32(dest, (uint)value);
+
+    static void PutTelemetry(List<byte> dest, short noise, uint txAir, uint rxAir, uint uptime, uint queue, string firmware)
+    {
+        PutI16(dest, noise);
+        PutU32(dest, txAir);
+        PutU32(dest, rxAir);
+        PutU32(dest, uptime);
+        PutU32(dest, queue);
+        var text = System.Text.Encoding.ASCII.GetBytes(firmware);
+        dest.Add((byte)text.Length);
+        dest.AddRange(text);
+    }
 }

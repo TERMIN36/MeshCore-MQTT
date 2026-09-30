@@ -74,7 +74,7 @@ public static class BridgeFrames
         if (message.Hello is { } hello)
             return DescribeHello(hello);
         if (message.Heartbeat is { } beat)
-            return $"пульс, принято {beat.PacketsInbound}, отдано {beat.PacketsPublished}";
+            return DescribeHeartbeat(beat);
         if (message.Packet is { } packet)
             return DescribePacket(packet);
         return message.Type switch
@@ -95,7 +95,27 @@ public static class BridgeFrames
             parts.Add(Place(lat, lon));
         parts.Add(hello.Forwarding ? "пересылка включена" : "пересылка выключена");
         parts.Add($"принято {hello.PacketsInbound}, отдано {hello.PacketsPublished}");
+        AppendTelemetry(parts, hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.Firmware);
         return string.Join(", ", parts);
+    }
+
+    static string DescribeHeartbeat(HeartbeatBody beat)
+    {
+        var parts = new List<string> { "пульс", $"принято {beat.PacketsInbound}, отдано {beat.PacketsPublished}" };
+        AppendTelemetry(parts, beat.NoiseFloor, beat.TxAirSecs, beat.RxAirSecs, beat.UptimeSecs, beat.TxQueue, beat.Firmware);
+        if (beat.Latitude is { } lat && beat.Longitude is { } lon)
+            parts.Add(Place(lat, lon));
+        return string.Join(", ", parts);
+    }
+
+    static void AppendTelemetry(List<string> parts, short noise, uint txAir, uint rxAir, uint uptime, uint queue, string firmware)
+    {
+        parts.Add(noise == 0 ? "шум не измерен" : $"шум {noise} дБм");
+        parts.Add($"эфир TX {txAir} с / RX {rxAir} с");
+        parts.Add($"аптайм {uptime} с");
+        parts.Add($"очередь {queue}");
+        if (firmware.Length > 0)
+            parts.Add("прошивка " + firmware);
     }
 
     static string DescribePacket(MeshPacket packet)
@@ -145,7 +165,7 @@ public static class BridgeFrames
     static bool TryHello(ReadOnlySpan<byte> body, out HelloBody hello)
     {
         hello = null!;
-        if (body.Length < 16)
+        if (body.Length < 52)
             return false;
         var i = 0;
         var freq = ReadU32(body.Slice(i, 4)); i += 4;
@@ -167,11 +187,10 @@ public static class BridgeFrames
 
         if ((flags & 0x02) != 0)
         {
-            if (i + 8 > body.Length)
+            if (!TryDegrees(body, ref i, out var latValue, out var lonValue))
                 return false;
-            lat = ReadI32(body.Slice(i, 4)) / 10_000_000d;
-            lon = ReadI32(body.Slice(i + 4, 4)) / 10_000_000d;
-            i += 8;
+            lat = latValue;
+            lon = lonValue;
         }
 
         if (i + 21 > body.Length)
@@ -182,23 +201,86 @@ public static class BridgeFrames
         var inbound = ReadU32(body.Slice(i, 4)); i += 4;
         var dups = ReadU32(body.Slice(i, 4)); i += 4;
         var errors = ReadU32(body.Slice(i, 4)); i += 4;
-        if (i != body.Length)
+        if (!TryTelemetry(body, ref i, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var firmware) || i != body.Length)
             return false;
-        hello = new HelloBody(freq, bw, sf, cr, tx, ant, lat, lon, forwarding, session, published, inbound, dups, errors);
+        hello = new HelloBody(
+            freq, bw, sf, cr, tx, ant, lat, lon, forwarding, session, published, inbound, dups, errors,
+            noise, txAir, rxAir, uptime, queue, firmware);
         return true;
     }
 
     static bool TryHeartbeat(ReadOnlySpan<byte> body, out HeartbeatBody beat)
     {
         beat = null!;
-        if (body.Length != 20)
+        if (body.Length < 40)
             return false;
-        beat = new HeartbeatBody(
-            ReadU32(body[..4]),
-            ReadU32(body.Slice(4, 4)),
-            ReadU32(body.Slice(8, 4)),
-            ReadU32(body.Slice(12, 4)),
-            ReadU32(body.Slice(16, 4)));
+        var i = 0;
+        var session = ReadU32(body.Slice(i, 4)); i += 4;
+        var published = ReadU32(body.Slice(i, 4)); i += 4;
+        var inbound = ReadU32(body.Slice(i, 4)); i += 4;
+        var dups = ReadU32(body.Slice(i, 4)); i += 4;
+        var errors = ReadU32(body.Slice(i, 4)); i += 4;
+        if (!TryTelemetry(body, ref i, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var firmware))
+            return false;
+        if (i >= body.Length)
+            return false;
+        var flags = body[i++];
+        double? lat = null;
+        double? lon = null;
+        if ((flags & 0x02) != 0)
+        {
+            if (!TryDegrees(body, ref i, out var latValue, out var lonValue))
+                return false;
+            lat = latValue;
+            lon = lonValue;
+        }
+
+        if (i != body.Length)
+            return false;
+        beat = new HeartbeatBody(session, published, inbound, dups, errors, noise, txAir, rxAir, uptime, queue, firmware, lat, lon);
+        return true;
+    }
+
+    static bool TryTelemetry(
+        ReadOnlySpan<byte> body,
+        ref int i,
+        out short noise,
+        out uint txAir,
+        out uint rxAir,
+        out uint uptime,
+        out uint queue,
+        out string firmware)
+    {
+        noise = 0;
+        txAir = 0;
+        rxAir = 0;
+        uptime = 0;
+        queue = 0;
+        firmware = "";
+        if (i + 19 > body.Length)
+            return false;
+        noise = ReadI16(body.Slice(i, 2)); i += 2;
+        txAir = ReadU32(body.Slice(i, 4)); i += 4;
+        rxAir = ReadU32(body.Slice(i, 4)); i += 4;
+        uptime = ReadU32(body.Slice(i, 4)); i += 4;
+        queue = ReadU32(body.Slice(i, 4)); i += 4;
+        var length = body[i++];
+        if (length > 31 || i + length > body.Length)
+            return false;
+        firmware = Encoding.ASCII.GetString(body.Slice(i, length));
+        i += length;
+        return true;
+    }
+
+    static bool TryDegrees(ReadOnlySpan<byte> body, ref int i, out double lat, out double lon)
+    {
+        lat = 0;
+        lon = 0;
+        if (i + 8 > body.Length)
+            return false;
+        lat = ReadI32(body.Slice(i, 4)) / 10_000_000d;
+        lon = ReadI32(body.Slice(i + 4, 4)) / 10_000_000d;
+        i += 8;
         return true;
     }
 
@@ -306,14 +388,28 @@ public sealed record HelloBody(
     uint PacketsPublished,
     uint PacketsInbound,
     uint Duplicates,
-    uint PublishErrors);
+    uint PublishErrors,
+    short NoiseFloor,
+    uint TxAirSecs,
+    uint RxAirSecs,
+    uint UptimeSecs,
+    uint TxQueue,
+    string Firmware);
 
 public sealed record HeartbeatBody(
     uint SessionId,
     uint PacketsPublished,
     uint PacketsInbound,
     uint Duplicates,
-    uint PublishErrors);
+    uint PublishErrors,
+    short NoiseFloor,
+    uint TxAirSecs,
+    uint RxAirSecs,
+    uint UptimeSecs,
+    uint TxQueue,
+    string Firmware,
+    double? Latitude,
+    double? Longitude);
 
 public sealed record MeshPacket(byte PayloadType, AdvertBody? Advert);
 
