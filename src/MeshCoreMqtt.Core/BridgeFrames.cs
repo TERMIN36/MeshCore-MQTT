@@ -90,29 +90,32 @@ public static class BridgeFrames
             parts.Add(Place(lat, lon));
         parts.Add(hello.Forwarding ? "пересылка включена" : "пересылка выключена");
         parts.Add($"принято {hello.PacketsInbound}, отдано {hello.PacketsPublished}");
-        AppendTelemetry(parts, hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.BatteryMv, hello.TempCx10, hello.Firmware);
+        AppendTelemetry(parts, hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.Environment, hello.BatteryMv, hello.TempCx10, hello.Firmware);
         return string.Join(", ", parts);
     }
 
     static string DescribeHeartbeat(HeartbeatBody beat)
     {
         var parts = new List<string> { "пульс", $"принято {beat.PacketsInbound}, отдано {beat.PacketsPublished}" };
-        AppendTelemetry(parts, beat.NoiseFloor, beat.TxAirSecs, beat.RxAirSecs, beat.UptimeSecs, beat.TxQueue, beat.BatteryMv, beat.TempCx10, beat.Firmware);
+        AppendTelemetry(parts, beat.NoiseFloor, beat.TxAirSecs, beat.RxAirSecs, beat.UptimeSecs, beat.TxQueue, beat.Environment, beat.BatteryMv, beat.TempCx10, beat.Firmware);
         if (beat.Latitude is { } lat && beat.Longitude is { } lon)
             parts.Add(Place(lat, lon));
         return string.Join(", ", parts);
     }
 
-    static void AppendTelemetry(List<string> parts, short noise, uint txAir, uint rxAir, uint uptime, uint queue, ushort batteryMv, short tempCx10, string firmware)
+    static void AppendTelemetry(List<string> parts, short noise, uint txAir, uint rxAir, uint uptime, uint queue, bool environment, ushort batteryMv, short tempCx10, string firmware)
     {
         parts.Add(noise == 0 ? "шум не измерен" : $"шум {noise} дБм");
         parts.Add($"эфир TX {txAir} с / RX {rxAir} с");
         parts.Add($"аптайм {uptime} с");
         parts.Add($"очередь {queue}");
-        parts.Add(batteryMv == 0 ? "батарея не измерена" : $"батарея {batteryMv} мВ");
-        parts.Add(tempCx10 == TemperatureMissing
-            ? "датчик не ответил"
-            : $"температура {(tempCx10 / 10d).ToString("0.0", CultureInfo.InvariantCulture)} °C");
+        if (environment)
+        {
+            parts.Add(batteryMv == 0 ? "батарея не измерена" : $"батарея {batteryMv} мВ");
+            parts.Add(tempCx10 == TemperatureMissing
+                ? "датчик не ответил"
+                : $"температура {(tempCx10 / 10d).ToString("0.0", CultureInfo.InvariantCulture)} °C");
+        }
         if (firmware.Length > 0)
             parts.Add("прошивка " + firmware);
     }
@@ -324,13 +327,17 @@ public static class BridgeFrames
         var dups = ReadU32(body.Slice(i, 4)); i += 4;
         var errors = ReadU32(body.Slice(i, 4)); i += 4;
         var mark = i;
+        var environment = true;
         if (!TryTail(body, mark, true, true, false, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var batteryMv, out var temp, out var firmware, out _, out _)
-            && !TryTail(body, mark, false, true, false, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out _, out _)
             && !TryTail(body, mark, true, false, false, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out _, out _))
-            return false;
+        {
+            environment = false;
+            if (!TryTail(body, mark, false, true, false, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out _, out _))
+                return false;
+        }
         hello = new HelloBody(
             freq, bw, sf, cr, tx, ant, lat, lon, forwarding, session, published, inbound, dups, errors,
-            noise, txAir, rxAir, uptime, queue, batteryMv, temp, firmware);
+            noise, txAir, rxAir, uptime, queue, batteryMv, temp, firmware, environment);
         return true;
     }
 
@@ -346,11 +353,15 @@ public static class BridgeFrames
         var dups = ReadU32(body.Slice(i, 4)); i += 4;
         var errors = ReadU32(body.Slice(i, 4)); i += 4;
         var mark = i;
+        var environment = true;
         if (!TryTail(body, mark, true, true, true, out var noise, out var txAir, out var rxAir, out var uptime, out var queue, out var batteryMv, out var temp, out var firmware, out var lat, out var lon)
-            && !TryTail(body, mark, false, true, true, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out lat, out lon)
             && !TryTail(body, mark, true, false, true, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out lat, out lon))
-            return false;
-        beat = new HeartbeatBody(session, published, inbound, dups, errors, noise, txAir, rxAir, uptime, queue, batteryMv, temp, firmware, lat, lon);
+        {
+            environment = false;
+            if (!TryTail(body, mark, false, true, true, out noise, out txAir, out rxAir, out uptime, out queue, out batteryMv, out temp, out firmware, out lat, out lon))
+                return false;
+        }
+        beat = new HeartbeatBody(session, published, inbound, dups, errors, noise, txAir, rxAir, uptime, queue, batteryMv, temp, firmware, lat, lon, environment);
         return true;
     }
 
@@ -379,7 +390,7 @@ public static class BridgeFrames
         if (coords)
         {
             if (cursor >= body.Length)
-                return false;
+                return cursor == body.Length;
             var flags = body[cursor++];
             if ((flags & 0x02) != 0)
             {
@@ -640,7 +651,8 @@ public sealed record HelloBody(
     uint TxQueue,
     ushort BatteryMv,
     short TempCx10,
-    string Firmware);
+    string Firmware,
+    bool Environment);
 
 public sealed record HeartbeatBody(
     uint SessionId,
@@ -657,7 +669,8 @@ public sealed record HeartbeatBody(
     short TempCx10,
     string Firmware,
     double? Latitude,
-    double? Longitude);
+    double? Longitude,
+    bool Environment);
 
 public sealed record MeshPacket(
     byte PayloadType,

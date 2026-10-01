@@ -57,6 +57,91 @@ public class BridgeFramesTests
     }
 
     [Fact]
+    public void Hello_and_heartbeat_match_the_repeater_encoder()
+    {
+        var hello = new List<byte>();
+        PutU32(hello, 869618000);
+        PutU32(hello, 62500);
+        hello.Add(8);
+        hello.Add(5);
+        hello.Add(22);
+        hello.Add(0x03);
+        PutI16(hello, 1250);
+        PutI32(hello, 557558000);
+        PutI32(hello, 376176000);
+        hello.Add(1);
+        PutU32(hello, 9);
+        PutU32(hello, 4);
+        PutU32(hello, 11);
+        PutU32(hello, 2);
+        PutU32(hello, 1);
+        PutTelemetry(hello, -108, 3, 8, 120, 1, 4120, 365, "v1.17.1-0.1.3");
+
+        Assert.True(BridgeFrames.TryDecode(Envelope(2, "R1", 1, 1700000000, hello), out var helloMessage));
+        var parsedHello = helloMessage.Hello!;
+        Assert.True(parsedHello.Environment);
+        Assert.Equal((ushort)4120, parsedHello.BatteryMv);
+        Assert.Equal((short)365, parsedHello.TempCx10);
+        Assert.Equal("v1.17.1-0.1.3", parsedHello.Firmware);
+        Assert.Contains("батарея 4120 мВ", BridgeFrames.Describe(helloMessage));
+        Assert.Contains("температура 36.5 °C", BridgeFrames.Describe(helloMessage));
+
+        var beat = new List<byte>();
+        PutU32(beat, 9);
+        PutU32(beat, 4);
+        PutU32(beat, 11);
+        PutU32(beat, 2);
+        PutU32(beat, 1);
+        PutTelemetry(beat, -108, 3, 8, 180, 0, 3700, BridgeFrames.TemperatureMissing, "v1.17.1-0.1.3");
+        beat.Add(0);
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R1", 2, null, beat), out var beatMessage));
+        var parsedBeat = beatMessage.Heartbeat!;
+        Assert.True(parsedBeat.Environment);
+        Assert.Equal((ushort)3700, parsedBeat.BatteryMv);
+        Assert.Equal(BridgeFrames.TemperatureMissing, parsedBeat.TempCx10);
+        Assert.Equal("v1.17.1-0.1.3", parsedBeat.Firmware);
+        Assert.Contains("батарея 3700 мВ", BridgeFrames.Describe(beatMessage));
+        Assert.Contains("датчик не ответил", BridgeFrames.Describe(beatMessage));
+    }
+
+    [Fact]
+    public void Older_tail_without_environment_keeps_the_other_stats()
+    {
+        var body = new List<byte>();
+        PutU32(body, 868000000);
+        PutU32(body, 125000);
+        body.Add(7);
+        body.Add(5);
+        body.Add(10);
+        body.Add(0);
+        body.Add(1);
+        PutU32(body, 1);
+        PutU32(body, 2);
+        PutU32(body, 3);
+        PutU32(body, 0);
+        PutU32(body, 0);
+        PutI16(body, -99);
+        PutU32(body, 4);
+        PutU32(body, 5);
+        PutU32(body, 6);
+        PutU32(body, 0);
+        var firmware = System.Text.Encoding.ASCII.GetBytes("1.9.0");
+        body.Add((byte)firmware.Length);
+        body.AddRange(firmware);
+
+        Assert.True(BridgeFrames.TryDecode(Envelope(2, "N", 1, null, body), out var message));
+        var hello = message.Hello!;
+        Assert.False(hello.Environment);
+        Assert.Equal((short)-99, hello.NoiseFloor);
+        Assert.Equal(6u, hello.UptimeSecs);
+        Assert.Equal("1.9.0", hello.Firmware);
+        var text = BridgeFrames.Describe(message);
+        Assert.Contains("прошивка 1.9.0", text);
+        Assert.DoesNotContain("батарея", text);
+        Assert.DoesNotContain("температура", text);
+    }
+
+    [Fact]
     public void Hello_without_optional_fields_still_reads_telemetry()
     {
         var body = new List<byte>();
@@ -143,6 +228,7 @@ public class BridgeFramesTests
         Assert.Equal(0u, beat.TxQueue);
         Assert.Equal((ushort)3650, beat.BatteryMv);
         Assert.Equal((short)-15, beat.TempCx10);
+        Assert.True(beat.Environment);
         Assert.Equal("1.9.0", beat.Firmware);
         Assert.Null(beat.Latitude);
         Assert.Equal("пульс, принято 5, отдано 2, шум -105 дБм, эфир TX 10 с / RX 20 с, аптайм 60 с, очередь 0, батарея 3650 мВ, температура -1.5 °C, прошивка 1.9.0", BridgeFrames.Describe(message));
@@ -172,10 +258,18 @@ public class BridgeFramesTests
         Assert.Null(headerOnly.Heartbeat);
         Assert.Equal("пульс", BridgeFrames.Describe(headerOnly));
 
-        var shortOfMinimum = new List<byte>(old);
-        PutTelemetry(shortOfMinimum, -100, 1, 1, 1, 1, 0, 0, "");
-        Assert.Equal(43, shortOfMinimum.Count);
-        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, shortOfMinimum), out var unfinished));
+        var ended = new List<byte>(old);
+        PutTelemetry(ended, -100, 1, 1, 1, 1, 3800, 215, "");
+        Assert.Equal(43, ended.Count);
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, ended), out var withoutFlags));
+        Assert.Equal((ushort)3800, withoutFlags.Heartbeat!.BatteryMv);
+        Assert.Equal((short)215, withoutFlags.Heartbeat.TempCx10);
+        Assert.True(withoutFlags.Heartbeat.Environment);
+        Assert.Null(withoutFlags.Heartbeat.Latitude);
+
+        var truncated = new List<byte>(ended);
+        truncated.RemoveAt(truncated.Count - 1);
+        Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 1, null, truncated), out var unfinished));
         Assert.Null(unfinished.Heartbeat);
 
         var minimum = new List<byte>(old);
@@ -194,6 +288,8 @@ public class BridgeFramesTests
         var trailing = new List<byte>(exact) { 0 };
         Assert.True(BridgeFrames.TryDecode(Envelope(3, "R", 3, null, trailing), out var trailed));
         Assert.Equal("v", trailed.Heartbeat!.Firmware);
+        Assert.Equal((ushort)4100, trailed.Heartbeat.BatteryMv);
+        Assert.Equal((short)210, trailed.Heartbeat.TempCx10);
 
         var missingCoords = new List<byte>(old);
         PutTelemetry(missingCoords, -100, 1, 1, 1, 1, 0, 0, "v");
