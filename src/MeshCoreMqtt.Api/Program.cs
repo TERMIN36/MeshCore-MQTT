@@ -123,7 +123,12 @@ api.MapGet("/auth/me", async (ClaimsPrincipal principal, AppDb db, CancellationT
 {
     var id = UserId(principal);
     var user = await db.Users.FirstAsync(u => u.Id == id, ct);
-    return Results.Ok(new { id = user.Id, email = user.Email, name = user.DisplayName, admin = user.IsAdmin });
+    return Results.Ok(new { id = user.Id, email = user.Email, name = user.DisplayName, admin = user.IsAdmin, canCreateGroups = user.CanCreateGroups });
+}).RequireAuthorization();
+api.MapPost("/auth/password", async (PasswordBody body, ClaimsPrincipal principal, Catalog catalog, CancellationToken ct) =>
+{
+    await catalog.ChangePassword(UserId(principal), body.Current, body.Password, ct);
+    return Results.NoContent();
 }).RequireAuthorization();
 
 api.Map("/ws/live", async (HttpContext context, LiveHub hub, ClaimsPrincipal principal) =>
@@ -220,10 +225,10 @@ api.MapDelete("/grants/{id:guid}", async (Guid id, ClaimsPrincipal principal, Ca
 var admin = api.MapGroup("/admin").RequireAuthorization(policy => policy.RequireRole("admin"));
 admin.MapGet("/users", async (AdminWork work, CancellationToken ct) => Results.Ok(await work.Users(ct)));
 admin.MapPost("/users", async (CreateUserBody body, AdminWork work, CancellationToken ct) =>
-    Results.Ok(await work.CreateUser(body.Email, body.Name, body.Password, body.Admin, ct)));
+    Results.Ok(await work.CreateUser(body.Email, body.Name, body.Password, body.Admin, body.CanCreateGroups, ct)));
 admin.MapPatch("/users/{id:guid}", async (Guid id, UpdateUserBody body, AdminWork work, CancellationToken ct) =>
 {
-    await work.UpdateUser(id, body.Disabled, body.Admin, ct);
+    await work.UpdateUser(id, body.Disabled, body.Admin, body.CanCreateGroups, body.Password, ct);
     return Results.NoContent();
 });
 admin.MapGet("/users/{id:guid}", async (Guid id, AdminWork work, CancellationToken ct) => Results.Ok(await work.UserTree(id, ct)));
@@ -293,6 +298,8 @@ static async Task InitializeAsync(WebApplication app, AppSecrets secrets)
         }
     }
 
+    await EnsureUserColumns(db);
+
     if (!await db.Users.AnyAsync(u => u.IsAdmin))
     {
         var admin = new UserAccount
@@ -301,6 +308,7 @@ static async Task InitializeAsync(WebApplication app, AppSecrets secrets)
             Email = secrets.AdminEmail.Trim().ToLowerInvariant(),
             DisplayName = "Администратор",
             IsAdmin = true,
+            CanCreateGroups = true,
             CreatedAt = DateTime.UtcNow
         };
         admin.PasswordHash = hasher.HashUser(admin, secrets.AdminPassword);
@@ -336,6 +344,23 @@ static async Task InitializeAsync(WebApplication app, AppSecrets secrets)
     await db.Database.ExecuteSqlRawAsync("""DROP TABLE IF EXISTS topic_filters""");
     await MapTables.Ensure(db);
     await scope.ServiceProvider.GetRequiredService<StatsStore>().LoadMapAsync(db, CancellationToken.None);
+}
+
+static async Task EnsureUserColumns(AppDb db)
+{
+    await db.Database.ExecuteSqlRawAsync("""
+        DO $mig$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'CanCreateGroups'
+          ) THEN
+            ALTER TABLE users ADD COLUMN "CanCreateGroups" boolean NOT NULL DEFAULT true;
+            ALTER TABLE users ALTER COLUMN "CanCreateGroups" SET DEFAULT false;
+          END IF;
+        END
+        $mig$;
+        """);
 }
 
 static async Task EnsureNameIndexes(AppDb db, ILogger logger)
@@ -463,13 +488,14 @@ static RoleTemplate SystemRole(string name, Privilege privileges) => new()
 };
 
 record LoginBody(string? Email, string? Password);
+record PasswordBody(string? Current, string? Password);
 record NameBody(string? Name);
 record RoleBody(string? Name, string[]? Privileges);
 record GrantBody(string? Email);
 record GrantTunnelsBody(TunnelMark[]? Tunnels);
 record DeviceBody(string? Name, bool CanSubscribe, bool CanPublish);
-record CreateUserBody(string? Email, string? Name, string? Password, bool Admin);
-record UpdateUserBody(bool? Disabled, bool? Admin);
+record CreateUserBody(string? Email, string? Name, string? Password, bool Admin, bool CanCreateGroups);
+record UpdateUserBody(bool? Disabled, bool? Admin, bool? CanCreateGroups, string? Password);
 record NodeBody(string? Name, string? Host, int Port, bool Tls);
 record StatusBody(string? Status);
 record MoveBody(Guid NodeId);

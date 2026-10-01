@@ -1,4 +1,4 @@
-export type User = { id: string; email: string; name: string; admin: boolean };
+export type User = { id: string; email: string; name: string; admin: boolean; canCreateGroups: boolean };
 
 const privileges = [
   ["view", "Смотреть сообщения"],

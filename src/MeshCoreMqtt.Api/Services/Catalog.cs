@@ -36,6 +36,20 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         };
     }
 
+    public async Task ChangePassword(Guid userId, string? current, string? password, CancellationToken ct)
+    {
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
+            ?? throw new AppException(401, "Нужно войти");
+        if (user.IsDisabled)
+            throw new AppException(403, "Учётка отключена");
+        if (current is null || !passwords.VerifyUser(user, current))
+            throw new AppException(400, "Текущий пароль неверный");
+        if ((password ?? "").Length < 8)
+            throw new AppException(400, "Пароль панели должен быть не короче 8 символов");
+        user.PasswordHash = passwords.HashUser(user, password!);
+        await db.SaveChangesAsync(ct);
+    }
+
     public async Task<IReadOnlyList<object>> Groups(Guid userId, CancellationToken ct)
     {
         var ids = await access.VisibleGroupIds(userId, ct);
@@ -146,6 +160,11 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
 
     public async Task<object> CreateGroup(Guid userId, string? name, CancellationToken ct)
     {
+        var user = await db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == userId, ct)
+            ?? throw new AppException(401, "Нужно войти");
+        if (!user.CanCreateGroups)
+            throw new AppException(403, "Нет права создавать группы");
+
         var group = new Group
         {
             Id = Guid.NewGuid(),
@@ -713,7 +732,8 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         id = user.Id,
         email = user.Email,
         name = user.DisplayName,
-        admin = user.IsAdmin
+        admin = user.IsAdmin,
+        canCreateGroups = user.CanCreateGroups
     };
 
     static Privilege PrivilegesOn(Group group, Guid userId, IEnumerable<GrantTunnel> mine, Guid spaceId)

@@ -16,10 +16,11 @@ public sealed class AdminWork(AppDb db, Passwords passwords, DecisionCache cache
                 name = u.DisplayName,
                 admin = u.IsAdmin,
                 disabled = u.IsDisabled,
+                canCreateGroups = u.CanCreateGroups,
                 createdAt = u.CreatedAt
             }).ToListAsync(ct);
 
-    public async Task<object> CreateUser(string? email, string? name, string? password, bool admin, CancellationToken ct)
+    public async Task<object> CreateUser(string? email, string? name, string? password, bool admin, bool canCreateGroups, CancellationToken ct)
     {
         var normalized = (email ?? "").Trim().ToLowerInvariant();
         if (normalized.Length < 3 || !normalized.Contains('@'))
@@ -35,6 +36,7 @@ public sealed class AdminWork(AppDb db, Passwords passwords, DecisionCache cache
             Email = normalized,
             DisplayName = (name ?? "").Trim() is { Length: > 0 } display ? display : normalized,
             IsAdmin = admin,
+            CanCreateGroups = canCreateGroups,
             CreatedAt = DateTime.UtcNow
         };
         if (user.DisplayName.Length > 200)
@@ -45,7 +47,7 @@ public sealed class AdminWork(AppDb db, Passwords passwords, DecisionCache cache
         return new { id = user.Id };
     }
 
-    public async Task UpdateUser(Guid userId, bool? disabled, bool? admin, CancellationToken ct)
+    public async Task UpdateUser(Guid userId, bool? disabled, bool? admin, bool? canCreateGroups, string? password, CancellationToken ct)
     {
         var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct)
             ?? throw new AppException(404, "Учётка не найдена");
@@ -53,6 +55,14 @@ public sealed class AdminWork(AppDb db, Passwords passwords, DecisionCache cache
             user.IsDisabled = off;
         if (admin is bool isAdmin)
             user.IsAdmin = isAdmin;
+        if (canCreateGroups is bool allowed)
+            user.CanCreateGroups = allowed;
+        if (password is { Length: > 0 })
+        {
+            if (password.Length < 8)
+                throw new AppException(400, "Пароль панели должен быть не короче 8 символов");
+            user.PasswordHash = passwords.HashUser(user, password);
+        }
         if (user.IsAdmin && user.IsDisabled)
             throw new AppException(400, "Сначала снимите права администратора или не отключайте эту учётку");
         var admins = await db.Users.CountAsync(u => u.IsAdmin && !u.IsDisabled && u.Id != user.Id, ct);
@@ -79,6 +89,7 @@ public sealed class AdminWork(AppDb db, Passwords passwords, DecisionCache cache
             name = user.DisplayName,
             admin = user.IsAdmin,
             disabled = user.IsDisabled,
+            canCreateGroups = user.CanCreateGroups,
             groups = owned.Select(g => new
             {
                 id = g.Id,

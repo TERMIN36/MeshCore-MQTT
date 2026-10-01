@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, safeReturn, setToken, token, type User } from "./api";
 import { AccountPage, AccountsPage, ActivityPage, CertificatePage, NodesPage, SharingPage } from "./admin";
-import { GroupsPage, PanelBar } from "./user";
+import { GroupsPage, PanelBar, PasswordDialog } from "./user";
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -84,6 +84,7 @@ function UserShell({ email }: { email: string }) {
 }
 
 function AdminShell({ user }: { user: User }) {
+  const [password, setPassword] = useState(false);
   return (
     <div className="shell">
       <nav>
@@ -94,8 +95,10 @@ function AdminShell({ user }: { user: User }) {
         <NavLink to="/admin/nodes">Узлы</NavLink>
         <NavLink to="/admin/certificate">Сертификат</NavLink>
         <NavLink to="/app">Панель пользователя</NavLink>
+        <button className="secondary" onClick={() => setPassword(true)}>Сменить пароль</button>
         <button className="secondary" onClick={() => { setToken(null); location.assign("/login"); }}>Выйти</button>
       </nav>
+      {password && <PasswordDialog onClose={() => setPassword(false)} />}
       <div className="center">
         <PanelBar />
         <main>

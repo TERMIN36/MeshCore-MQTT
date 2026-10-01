@@ -10,6 +10,7 @@ export function AccountsPage() {
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [admin, setAdmin] = useState(false);
+  const [canCreateGroups, setCanCreateGroups] = useState(false);
   const [error, setError] = useState("");
 
   async function load() { setUsers(await api("/api/admin/users")); }
@@ -23,8 +24,8 @@ export function AccountsPage() {
         event.preventDefault();
         setError("");
         try {
-          await api("/api/admin/users", { method: "POST", body: JSON.stringify({ email, name, password, admin }) });
-          setEmail(""); setName(""); setPassword(""); setAdmin(false);
+          await api("/api/admin/users", { method: "POST", body: JSON.stringify({ email, name, password, admin, canCreateGroups }) });
+          setEmail(""); setName(""); setPassword(""); setAdmin(false); setCanCreateGroups(false);
           await load();
         } catch (err) {
           setError(err instanceof Error ? err.message : "Не удалось создать учётку");
@@ -34,6 +35,7 @@ export function AccountsPage() {
         <input placeholder="Имя" value={name} onChange={(e) => setName(e.target.value)} />
         <input placeholder="Пароль, не короче 8 символов" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
         <label className="check"><input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} />Администратор</label>
+        <label className="check"><input type="checkbox" checked={canCreateGroups} onChange={(e) => setCanCreateGroups(e.target.checked)} />Может создавать группы</label>
         <button type="submit">Создать учётку</button>
       </form>
       <table>
@@ -42,6 +44,20 @@ export function AccountsPage() {
             <tr key={user.id}>
               <td><Link to={`/admin/users/${user.id}`}>{user.name}</Link><div className="muted">{user.email}</div></td>
               <td>{user.admin ? "админ" : "пользователь"}{user.disabled ? " · отключена" : ""}</td>
+              <td>
+                <label className="check">
+                  <input type="checkbox" checked={!!user.canCreateGroups} onChange={async (event) => {
+                    setError("");
+                    try {
+                      await api(`/api/admin/users/${user.id}`, { method: "PATCH", body: JSON.stringify({ canCreateGroups: event.target.checked }) });
+                      await load();
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Не удалось изменить учётку");
+                    }
+                  }} />
+                  Создавать группы
+                </label>
+              </td>
               <td>
                 <button className="secondary" onClick={async () => {
                   setError("");
@@ -64,6 +80,9 @@ export function AccountsPage() {
 export function AccountPage() {
   const { id = "" } = useParams();
   const [tree, setTree] = useState<any>(null);
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   useEffect(() => { api(`/api/admin/users/${id}`).then(setTree).catch((err) => setError(err.message)); }, [id]);
   if (!tree) return error ? <p className="error">{error}</p> : <p>Загрузка…</p>;
@@ -71,6 +90,44 @@ export function AccountPage() {
     <>
       <h1>{tree.name}</h1>
       <p className="muted">{tree.email}</p>
+      {error && <p className="error">{error}</p>}
+      {notice && <p className="muted">{notice}</p>}
+      <label className="check">
+        <input type="checkbox" checked={!!tree.canCreateGroups} onChange={async (event) => {
+          const canCreateGroups = event.target.checked;
+          setError("");
+          setNotice("");
+          try {
+            await api(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify({ canCreateGroups }) });
+            setTree({ ...tree, canCreateGroups });
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Не удалось изменить учётку");
+          }
+        }} />
+        Может создавать группы
+      </label>
+      <form className="panel grid" onSubmit={async (event) => {
+        event.preventDefault();
+        setError("");
+        setNotice("");
+        if (password !== again) {
+          setError("Пароли не совпадают");
+          return;
+        }
+        try {
+          await api(`/api/admin/users/${id}`, { method: "PATCH", body: JSON.stringify({ password }) });
+          setPassword("");
+          setAgain("");
+          setNotice("Пароль изменён");
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Не удалось сменить пароль");
+        }
+      }}>
+        <h2>Пароль</h2>
+        <input placeholder="Новый пароль, не короче 8 символов" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+        <input placeholder="Повторите пароль" type="password" required minLength={8} value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" />
+        <button type="submit">Сменить пароль</button>
+      </form>
       <h2>Группы</h2>
       {tree.groups.map((group: any) => (
         <section key={group.id} className="panel">

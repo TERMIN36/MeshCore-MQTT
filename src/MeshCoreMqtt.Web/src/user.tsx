@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, privilegeLabel } from "./api";
+import { api, privilegeLabel, type User } from "./api";
 import { subscribeLive } from "./live";
 import { GroupMap } from "./map";
 import { SetupHint } from "./setup-guide";
@@ -106,6 +106,8 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   const [ready, setReady] = useState(false);
   const [secrets, setSecrets] = useState<Record<string, Login>>({});
   const [name, setName] = useState("");
+  const [canCreateGroups, setCanCreateGroups] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const [addingGroup, setAddingGroup] = useState(false);
   const [addingDevice, setAddingDevice] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -136,7 +138,12 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   }
 
   async function reload() {
-    takeTree(await api<GroupNode[]>("/api/tree"));
+    const [tree, me] = await Promise.all([
+      api<GroupNode[]>("/api/tree"),
+      api<User>("/api/auth/me")
+    ]);
+    setCanCreateGroups(me.canCreateGroups);
+    takeTree(tree);
   }
 
   useEffect(() => {
@@ -202,11 +209,16 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
           <div className="tree-head">
             <div className="tree-label">
               <p className="kicker">Сеть</p>
-              <button type="button" className="ghost" onClick={onLogout}>Выйти</button>
+              <span className="row">
+                <button type="button" className="ghost" onClick={() => setChangingPassword(true)}>Пароль</button>
+                <button type="button" className="ghost" onClick={onLogout}>Выйти</button>
+              </span>
             </div>
-            <button type="button" className="secondary" onClick={() => { setName(""); setError(""); setAddingGroup(true); }}>
-              Новая группа
-            </button>
+            {canCreateGroups && (
+              <button type="button" className="secondary" onClick={() => { setName(""); setError(""); setAddingGroup(true); }}>
+                Новая группа
+              </button>
+            )}
           </div>
           <div className="tree-scroll">
             {!ready && <p className="muted">Загрузка…</p>}
@@ -235,7 +247,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
         </aside>
         <section className="scene">
           {!ready && <div className="scene-body"><p className="muted">Загрузка…</p></div>}
-          {ready && !group && <div className="scene-body"><p className="muted">Создайте группу слева.</p></div>}
+          {ready && !group && <div className="scene-body"><p className="muted">{canCreateGroups ? "Создайте группу слева." : "Групп пока нет."}</p></div>}
           {ready && group && !space && (
             <GroupCard
               group={group}
@@ -365,6 +377,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
         </div>
         <footer className="bottombar">Подключение репитеров и доступ к ним.</footer>
       </div>
+      {changingPassword && <PasswordDialog onClose={() => setChangingPassword(false)} />}
       {addingGroup && (
         <div className="modal-backdrop" onClick={() => setAddingGroup(false)}>
           <form className="modal-card" role="dialog" aria-modal="true" aria-labelledby="new-group-title" onSubmit={createGroup} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") setAddingGroup(false); }}>
@@ -397,6 +410,59 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
         />
       )}
     </>
+  );
+}
+
+export function PasswordDialog({ onClose }: { onClose: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <form className="modal-card" role="dialog" aria-modal="true" aria-labelledby="password-title" onSubmit={async (event) => {
+        event.preventDefault();
+        setError("");
+        if (password !== again) {
+          setError("Пароли не совпадают");
+          return;
+        }
+        try {
+          await api("/api/auth/password", { method: "POST", body: JSON.stringify({ current, password }) });
+          setDone(true);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Не удалось сменить пароль");
+        }
+      }} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
+        <h2 id="password-title">Сменить пароль</h2>
+        {done ? <p>Пароль изменён.</p> : (
+          <>
+            <label>Текущий пароль
+              <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} required autoFocus autoComplete="current-password" />
+            </label>
+            <label>Новый пароль
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} autoComplete="new-password" />
+            </label>
+            <label>Повторите пароль
+              <input type="password" value={again} onChange={(e) => setAgain(e.target.value)} required minLength={8} autoComplete="new-password" />
+            </label>
+            {error && <p className="error">{error}</p>}
+          </>
+        )}
+        <div className="row">
+          {done
+            ? <button type="button" onClick={onClose}>Закрыть</button>
+            : (
+              <>
+                <button type="button" className="secondary" onClick={onClose}>Отмена</button>
+                <button type="submit">Сменить пароль</button>
+              </>
+            )}
+        </div>
+      </form>
+    </div>
   );
 }
 

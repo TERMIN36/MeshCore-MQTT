@@ -28,6 +28,7 @@ public sealed class UserAccount
     public string DisplayName { get; set; } = "";
     public bool IsAdmin { get; set; }
     public bool IsDisabled { get; set; }
+    public bool CanCreateGroups { get; set; }
     public DateTime CreatedAt { get; set; }
     public List<Group> Groups { get; set; } = [];
 }
