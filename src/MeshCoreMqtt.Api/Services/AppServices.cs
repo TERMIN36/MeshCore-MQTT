@@ -514,28 +514,6 @@ public sealed partial class StatsStore(LiveHub live)
             DropOldestLink();
         _mapLinks[key] = seen;
         _dirtyLinks.Add(key);
-        TouchEnd(nodeId, key.Tunnel, key.From, seen);
-        TouchEnd(nodeId, key.Tunnel, key.To, seen);
-    }
-
-    void TouchEnd(Guid nodeId, string tunnel, string token, DateTime seen)
-    {
-        (Guid NodeId, string Tunnel, string PublicKey)? matchKey = null;
-        foreach (var pair in _mapNodes)
-        {
-            if (pair.Key.NodeId != nodeId || pair.Key.Tunnel != tunnel)
-                continue;
-            if (!pair.Key.PublicKey.StartsWith(token, StringComparison.Ordinal))
-                continue;
-            if (matchKey is not null)
-                return;
-            matchKey = pair.Key;
-        }
-
-        if (matchKey is not { } found || !_mapNodes.TryGetValue(found, out var node) || node.Seen >= seen)
-            return;
-        node.Seen = seen;
-        _dirtyNodes.Add(found);
     }
 
     void DropOldestNode()

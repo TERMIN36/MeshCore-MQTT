@@ -41,7 +41,7 @@ export function GroupMap({ group, onOpenDevice }: {
 
   const gathered = useMemo(() => collect(group.spaces), [group.spaces]);
   const windowMs = AGES.find((item) => item.id === age)?.ms ?? AGES[4].ms;
-  const { markers, lines, tunnels, unplaced, hidden } = useMemo(
+  const { markers, lines, tunnels, unplaced, hiddenNodes, hiddenLinks } = useMemo(
     () => applyAge(gathered, windowMs, now),
     [gathered, windowMs, now]
   );
@@ -125,7 +125,19 @@ export function GroupMap({ group, onOpenDevice }: {
           if (!from || !to) return null;
           const a = screen(from.latitude, from.longitude);
           const b = screen(to.latitude, to.longitude);
-          return <line key={line.spaceId + line.from + line.to} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={line.color} />;
+          const mark = Math.hypot(b.x - a.x, b.y - a.y) >= 28;
+          return (
+            <g key={line.spaceId + line.from + line.to}>
+              <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={line.color}>
+                <title>{`${from.name || "узел"} — ${to.name || "узел"}${ago(line.seen, now)}`}</title>
+              </line>
+              {mark && (
+                <text className="map-link-age" x={(a.x + b.x) / 2} y={(a.y + b.y) / 2} fill={line.color}>
+                  {shortAgo(line.seen, now)}
+                </text>
+              )}
+            </g>
+          );
         })}
       </svg>
       {markers.map((marker) => {
@@ -140,19 +152,25 @@ export function GroupMap({ group, onOpenDevice }: {
             title={`${marker.name || "узел"} · ${marker.spaceName} · ${marker.mqtt ? "MQTT" : "LoRa"}${ago(marker.seen, now)}`}
             onClick={() => { if (device) onOpenDevice(marker.spaceId, device.id); }}
           >
-            <span><b>{marker.mqtt ? "MQTT" : "LoRa"}</b><em>{marker.name || marker.publicKey.slice(0, 4)}</em></span>
+            <span>
+              <b>{marker.mqtt ? "MQTT" : "LoRa"}</b>
+              <em>{marker.name || marker.publicKey.slice(0, 4)}</em>
+              <i>{shortAgo(marker.seen, now)}</i>
+            </span>
           </button>
         );
       })}
       <div className="group-map-legend">
         <p><i className="swatch mqtt" />MQTT — репитер этого тунеля</p>
         <p><i className="swatch lora" />LoRa — узел по радио. Квадрат — репитер, круг — остальные.</p>
-        <p>Рамка и линия окрашены по тунелю. Линия — шаг маршрута по радио.</p>
+        <p>Рамка окрашена по тунелю. У узла — тип и давность, на линии — давность шага.</p>
         {tunnels.length === 0 && <p>Тунелей с просмотром нет.</p>}
-        {markers.length === 0 && tunnels.length > 0 && hidden === 0 && <p>Участников с координатами ещё нет.</p>}
-        {markers.length === 0 && hidden > 0 && <p>В выбранном сроке узлов с координатами нет.</p>}
+        {markers.length === 0 && tunnels.length > 0 && hiddenNodes === 0 && <p>Участников с координатами ещё нет.</p>}
+        {markers.length === 0 && hiddenNodes > 0 && <p>В выбранном сроке узлов с координатами нет.</p>}
+        {markers.length > 0 && lines.length === 0 && hiddenLinks > 0 && <p>В выбранном сроке связей нет.</p>}
         {unplaced.length > 0 && <p>Без координат: {unplaced.map((item) => item.name).join(", ")}</p>}
-        {hidden > 0 && <p>Скрыто старше срока: {hidden}</p>}
+        {hiddenNodes > 0 && <p>Скрыто узлов старше срока: {hiddenNodes}</p>}
+        {hiddenLinks > 0 && <p>Скрыто связей старше срока: {hiddenLinks}</p>}
         {tunnels.map((item) => (
           <p key={item.id}><i style={{ background: item.color }} />{item.name}</p>
         ))}
@@ -200,7 +218,14 @@ function applyAge(data: ReturnType<typeof collect>, windowMs: number, now: numbe
     placed.has(line.spaceId + "\n" + line.from.toLowerCase()) &&
     placed.has(line.spaceId + "\n" + line.to.toLowerCase()));
   const unplaced = data.unplaced.filter((item) => fresh(item.seen, windowMs, now));
-  return { markers, lines, tunnels: data.tunnels, unplaced, hidden: data.markers.length - markers.length };
+  return {
+    markers,
+    lines,
+    tunnels: data.tunnels,
+    unplaced,
+    hiddenNodes: data.markers.length - markers.length,
+    hiddenLinks: data.lines.length - lines.length
+  };
 }
 
 function fresh(seen: string | undefined, windowMs: number, now: number) {
@@ -208,6 +233,18 @@ function fresh(seen: string | undefined, windowMs: number, now: number) {
   const at = Date.parse(seen);
   if (!Number.isFinite(at)) return true;
   return now - at <= windowMs;
+}
+
+function shortAgo(seen: string | undefined, now: number) {
+  if (!seen) return "";
+  const at = Date.parse(seen);
+  if (!Number.isFinite(at)) return "";
+  const mins = Math.max(0, Math.round((now - at) / 60000));
+  if (mins < 1) return "сейчас";
+  if (mins < 60) return `${mins} мин`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours} ч`;
+  return `${Math.round(hours / 24)} дн`;
 }
 
 function ago(seen: string | undefined, now: number) {

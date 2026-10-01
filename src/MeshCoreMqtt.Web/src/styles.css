@@ -807,6 +807,18 @@ button.repeater.selected {
 .group-map-links line {
   stroke-width: 2;
   stroke-linecap: round;
+  pointer-events: stroke;
+}
+
+.map-link-age {
+  font-size: 10px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+  stroke: #0d0f12;
+  stroke-width: 3px;
+  paint-order: stroke;
 }
 
 .map-node {
@@ -847,7 +859,7 @@ button.repeater.selected {
   display: flex;
   align-items: baseline;
   gap: 4px;
-  max-width: 148px;
+  max-width: 190px;
   white-space: nowrap;
   color: var(--text);
   font-size: 11px;
@@ -863,8 +875,17 @@ button.repeater.selected {
   letter-spacing: 0.03em;
 }
 
-.map-node.mqtt span b { color: var(--mqtt); }
-.map-node.lora span b { color: var(--radio); }
+.map-node.mqtt span b,
+.map-node.mqtt span i { color: var(--mqtt); }
+.map-node.lora span b,
+.map-node.lora span i { color: var(--radio); }
+
+.map-node span i {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+}
 
 .map-node span em {
   overflow: hidden;
