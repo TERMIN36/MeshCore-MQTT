@@ -698,6 +698,17 @@ button.repeater.selected {
   background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
 }
 
+button.repeater.late,
+button.repeater.late:hover,
+button.repeater.late.selected {
+  border-color: var(--danger);
+  box-shadow: inset 0 0 0 1px var(--danger);
+}
+
+button.repeater.late.selected {
+  background: color-mix(in srgb, var(--danger) 12%, var(--panel-2));
+}
+
 .repeater-top {
   display: flex;
   align-items: center;
@@ -768,6 +779,49 @@ button.repeater.selected {
   border-radius: 10px;
   background: var(--panel);
 }
+
+.feed-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.feed-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.feed-groups button.chip {
+  border: 1px solid var(--line-strong);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.feed-groups button.chip.on {
+  border-color: var(--text);
+}
+
+.feed-groups button.chip[data-group="pulse"] { background: color-mix(in srgb, #2dd4bf 42%, var(--panel-2)); }
+.feed-groups button.chip[data-group="hello"] { background: color-mix(in srgb, #60a5fa 42%, var(--panel-2)); }
+.feed-groups button.chip[data-group="advert"] { background: color-mix(in srgb, #fbbf24 46%, var(--panel-2)); }
+.feed-groups button.chip[data-group="chat"] { background: color-mix(in srgb, #a78bfa 46%, var(--panel-2)); }
+.feed-groups button.chip[data-group="exchange"] { background: color-mix(in srgb, #22d3ee 42%, var(--panel-2)); }
+.feed-groups button.chip[data-group="ack"] { background: color-mix(in srgb, #84cc16 42%, var(--panel-2)); }
+.feed-groups button.chip[data-group="route"] { background: color-mix(in srgb, #fb923c 46%, var(--panel-2)); }
+.feed-groups button.chip[data-group="control"] { background: color-mix(in srgb, #f472b6 42%, var(--panel-2)); }
+.feed-groups button.chip[data-group="other"] { background: color-mix(in srgb, #fb7185 36%, var(--panel-2)); }
+
+.feed tbody tr[data-group="pulse"] td { background: color-mix(in srgb, #2dd4bf 28%, var(--panel)); }
+.feed tbody tr[data-group="hello"] td { background: color-mix(in srgb, #60a5fa 30%, var(--panel)); }
+.feed tbody tr[data-group="advert"] td { background: color-mix(in srgb, #fbbf24 34%, var(--panel)); }
+.feed tbody tr[data-group="chat"] td { background: color-mix(in srgb, #a78bfa 34%, var(--panel)); }
+.feed tbody tr[data-group="exchange"] td { background: color-mix(in srgb, #22d3ee 30%, var(--panel)); }
+.feed tbody tr[data-group="ack"] td { background: color-mix(in srgb, #84cc16 30%, var(--panel)); }
+.feed tbody tr[data-group="route"] td { background: color-mix(in srgb, #fb923c 32%, var(--panel)); }
+.feed tbody tr[data-group="control"] td { background: color-mix(in srgb, #f472b6 30%, var(--panel)); }
+.feed tbody tr[data-group="other"] td { background: color-mix(in srgb, #fb7185 26%, var(--panel)); }
 
 .grant { display: grid; gap: 8px; }
 .tunnel-marks { display: grid; gap: 8px; margin-top: 8px; }

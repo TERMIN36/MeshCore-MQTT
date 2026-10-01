@@ -13,6 +13,7 @@ type Live = {
   publicKey: string;
   name: string;
   lastSeen: string;
+  pulseAt?: string | null;
   clock?: string | null;
   latitude?: number | null;
   longitude?: number | null;
@@ -43,7 +44,7 @@ type Live = {
 type Device = { id: string; name: string; canSubscribe: boolean; canPublish: boolean; createdAt?: string; live?: Live | null };
 type TunnelDestination = { groupId: string; groupName: string; spaceId: string; spaceName: string };
 type Activity = { topic: string; messagesPerMinute: number; lastSeen: string };
-type FeedItem = { topic: string; seen: string; publicKey: string; name: string; summary: string };
+type FeedItem = { topic: string; seen: string; publicKey: string; name: string; summary: string; kind?: string };
 type Login = { id: string; name: string; config: string };
 type MapPoint = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean; mqtt?: boolean; seen?: string };
 type MapEdge = { from: string; to: string; seen: string };
@@ -113,6 +114,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
   const [renaming, setRenaming] = useState(false);
   const [confirmSpace, setConfirmSpace] = useState(false);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
 
   const requested = readPlace(location.pathname);
   const place = ready ? resolvePlace(groups, requested) : requested;
@@ -151,6 +153,10 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
       setError(err instanceof Error ? err.message : "Не удалось загрузить");
       setReady(true);
     });
+  }, []);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 10_000);
+    return () => window.clearInterval(timer);
   }, []);
   useEffect(() => subscribeLive(["tree"], { onTree: (tree) => takeTree(tree as GroupNode[]) }), []);
   useEffect(() => {
@@ -313,7 +319,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                 {messages && space.privileges.includes("view") && (
                   <div className="drawer">
                     <h2>Сообщения</h2>
-                    <MessageFeed rows={space.feed ?? []} />
+                    <MessageFeed key={space.id} rows={space.feed ?? []} />
                   </div>
                 )}
                 <section className="sheet repeater-board">
@@ -327,7 +333,8 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                         <button
                           key={item.id}
                           type="button"
-                          className={item.id === device?.id ? "repeater selected" : "repeater"}
+                          className={repeaterClass(item.id === device?.id, pulseLate(item.live, now))}
+                          title={pulseTitle(item.live, now)}
                           onClick={() => go({ groupId: group.id, spaceId: space.id, deviceId: item.id }, messages)}
                         >
                           <RepeaterFace name={item.name} live={item.live} createdAt={item.createdAt} />
@@ -879,22 +886,94 @@ function copyWithSelection(value: string) {
   if (!copied) throw new Error("Не удалось скопировать");
 }
 
+const feedGroups = [
+  { id: "pulse", label: "Пульс", kinds: ["pulse"] },
+  { id: "hello", label: "Приветствие", kinds: ["hello"] },
+  { id: "advert", label: "Объявление", kinds: ["advert"] },
+  { id: "chat", label: "Переписка", kinds: ["text", "group-text", "group-data"] },
+  { id: "exchange", label: "Запрос", kinds: ["request", "response", "anon", "search", "search-reply"] },
+  { id: "ack", label: "Подтверждение", kinds: ["ack"] },
+  { id: "route", label: "Маршрут", kinds: ["path", "trace"] },
+  { id: "control", label: "Управление", kinds: ["control", "custom", "multipart"] },
+  { id: "other", label: "Прочее", kinds: ["packet", "unknown", "broken"] }
+] as const;
+
+const kindGroup = new Map<string, string>(feedGroups.flatMap((group) => group.kinds.map((kind) => [kind, group.id] as const)));
+
+function messageKind(row: FeedItem) {
+  if (row.kind) return row.kind;
+  const text = row.summary;
+  if (text.startsWith("пульс")) return "pulse";
+  if (text.startsWith("приветствие")) return "hello";
+  if (text.startsWith("объявление")) return "advert";
+  if (text.startsWith("текст группы")) return "group-text";
+  if (text.startsWith("текст")) return "text";
+  if (text.startsWith("данные группы")) return "group-data";
+  if (text.startsWith("запрос поиска")) return "search";
+  if (text.startsWith("запрос")) return "request";
+  if (text.startsWith("ответ поиска")) return "search-reply";
+  if (text.startsWith("ответ")) return "response";
+  if (text.startsWith("подтверждение")) return "ack";
+  if (text.startsWith("путь")) return "path";
+  if (text.startsWith("трассировка")) return "trace";
+  if (text.startsWith("анонимный запрос")) return "anon";
+  if (text.startsWith("составной пакет")) return "multipart";
+  if (text.startsWith("управление")) return "control";
+  if (text.startsWith("свой формат")) return "custom";
+  if (text.startsWith("конверт не разобран") || text.startsWith("пакет не разобран") || text.startsWith("неизвестный тип") || text.startsWith("пакет типа")) return "broken";
+  return "unknown";
+}
+
+function messageGroup(row: FeedItem) {
+  return kindGroup.get(messageKind(row)) ?? "other";
+}
+
 function MessageFeed({ rows }: { rows: FeedItem[] }) {
+  const [group, setGroup] = useState("");
+  const [query, setQuery] = useState("");
   if (!rows.length) return <p className="muted">Сообщений пока нет. Они появятся, когда репитер выйдет на связь.</p>;
+  const present = new Set(rows.map(messageGroup));
+  const options = feedGroups.filter((item) => present.has(item.id) || item.id === group);
+  const needle = query.trim().toLocaleLowerCase("ru");
+  const shown = rows.filter((row) => {
+    if (group && messageGroup(row) !== group) return false;
+    if (!needle) return true;
+    const haystack = `${row.name} ${row.publicKey} ${row.summary} ${row.topic}`.toLocaleLowerCase("ru");
+    return haystack.includes(needle);
+  });
   return (
-    <table>
-      <thead><tr><th>Время</th><th>Репитер</th><th>Ключ</th><th>Сообщение</th></tr></thead>
-      <tbody>
-        {rows.map((row, index) => (
-          <tr key={`${row.seen}-${row.publicKey}-${index}`}>
-            <td>{new Date(row.seen).toLocaleString()}</td>
-            <td>{row.name || EMPTY}</td>
-            <td title={row.publicKey}>{shortKey(row.publicKey)}</td>
-            <td>{row.summary}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      <div className="feed-filter">
+        <div className="feed-groups" role="group" aria-label="Группа сообщений">
+          <button type="button" className={group === "" ? "chip on" : "chip"} onClick={() => setGroup("")}>Все</button>
+          {options.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={group === item.id ? "chip on" : "chip"}
+              data-group={item.id}
+              onClick={() => setGroup((current) => current === item.id ? "" : item.id)}
+            >{item.label}</button>
+          ))}
+        </div>
+        <input aria-label="Поиск по сообщениям" placeholder="Репитер, ключ или текст" value={query} onChange={(event) => setQuery(event.target.value)} />
+      </div>
+      {shown.length === 0 ? <p className="muted">Нет сообщений по этому фильтру.</p> : (
+        <table className="feed">
+          <thead><tr><th>Время</th><th>Репитер</th><th>Ключ</th><th>Сообщение</th></tr></thead>
+          <tbody>
+            {shown.map((row, index) => (
+              <tr key={`${row.seen}-${row.publicKey}-${index}`} data-group={messageGroup(row)}>
+                <td>{new Date(row.seen).toLocaleString()}</td>
+                <td>{row.name || EMPTY}</td>
+                <td title={row.publicKey}>{shortKey(row.publicKey)}</td>
+                <td>{row.summary}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
   );
 }
 
@@ -915,6 +994,24 @@ function mhz(hz?: number | null) {
 function khz(hz?: number | null) {
   if (hz == null) return EMPTY;
   return `${(hz / 1e3).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} кГц`;
+}
+
+const pulseGapMs = 5 * 60 * 1000;
+
+function repeaterClass(selected: boolean, late: boolean) {
+  return ["repeater", selected ? "selected" : "", late ? "late" : ""].filter(Boolean).join(" ");
+}
+
+function pulseLate(live: Live | null | undefined, now: number) {
+  if (!live?.pulseAt) return true;
+  const at = new Date(live.pulseAt).getTime();
+  if (Number.isNaN(at)) return true;
+  return now - at > pulseGapMs;
+}
+
+function pulseTitle(live: Live | null | undefined, now: number) {
+  if (!pulseLate(live, now)) return undefined;
+  return live?.pulseAt ? "Пульс не приходил больше 5 минут" : "Пульс ещё не приходил";
 }
 
 function cardStatus(live?: Live | null, createdAt?: string) {

@@ -590,7 +590,8 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 seen = row.Seen,
                 publicKey = row.PublicKey,
                 name = row.Name,
-                summary = row.Summary
+                summary = row.Summary,
+                kind = row.Kind
             });
     }
 
@@ -713,6 +714,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         publicKey = live.PublicKey,
         name = live.Name,
         lastSeen = live.LastSeen,
+        pulseAt = live.PulseAt,
         clock = live.Clock,
         latitude = live.Latitude,
         longitude = live.Longitude,

@@ -54,6 +54,7 @@ public class BridgeFramesTests
         Assert.Contains("батарея 3700 мВ", text);
         Assert.Contains("температура 36.5 °C", text);
         Assert.Contains("прошивка 1.9.0", text);
+        Assert.Equal("hello", BridgeFrames.Kind(message));
     }
 
     [Fact]
@@ -102,6 +103,8 @@ public class BridgeFramesTests
         Assert.Equal("v1.17.1-0.1.3", parsedBeat.Firmware);
         Assert.Contains("батарея 3700 мВ", BridgeFrames.Describe(beatMessage));
         Assert.Contains("датчик не ответил", BridgeFrames.Describe(beatMessage));
+        Assert.Equal("hello", BridgeFrames.Kind(helloMessage));
+        Assert.Equal("pulse", BridgeFrames.Kind(beatMessage));
     }
 
     [Fact]

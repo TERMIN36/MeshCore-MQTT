@@ -81,6 +81,51 @@ public static class BridgeFrames
         };
     }
 
+    public static string Kind(BridgeMessage message)
+    {
+        if (message.Hello is not null || message.Type == 2)
+            return "hello";
+        if (message.Heartbeat is not null || message.Type == 3)
+            return "pulse";
+        if (message.Packet is { } packet)
+            return PacketKind(packet);
+        return message.Type == 1 ? "packet" : "unknown";
+    }
+
+    static string PacketKind(MeshPacket packet)
+    {
+        if (packet.Advert is not null || packet.PayloadType == 4)
+            return "advert";
+        return packet.PayloadType switch
+        {
+            0 => "request",
+            1 => "response",
+            2 => "text",
+            3 => "ack",
+            5 => "group-text",
+            6 => "group-data",
+            7 => "anon",
+            8 => "path",
+            9 => "trace",
+            10 => "multipart",
+            11 => ControlKind(packet),
+            15 => "custom",
+            _ => "packet"
+        };
+    }
+
+    static string ControlKind(MeshPacket packet)
+    {
+        if (packet.Control is not byte code)
+            return "control";
+        return (code & 0xF0) switch
+        {
+            0x80 => "search",
+            0x90 => "search-reply",
+            _ => "control"
+        };
+    }
+
     static string DescribeHello(HelloBody hello)
     {
         var parts = new List<string> { "приветствие", Mhz(hello.FrequencyHz), $"SF {hello.SpreadingFactor}", $"CR {hello.CodingRate}", $"{hello.TxDbm} дБм" };

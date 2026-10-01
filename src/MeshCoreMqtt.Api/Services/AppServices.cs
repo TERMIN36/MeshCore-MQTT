@@ -198,13 +198,18 @@ public sealed partial class StatsStore(LiveHub live)
             return;
         BridgeMessage? parsed = null;
         string summary = "";
+        string kind = "";
         if (payload.Length is > 0 and <= BridgeFrames.MaxBytes && BridgeFrames.TryDecode(payload, out var message))
         {
             parsed = message;
             summary = BridgeFrames.Describe(message);
+            kind = BridgeFrames.Kind(message);
         }
         else if (payload.Length > 0)
+        {
             summary = "конверт не разобран";
+            kind = "broken";
+        }
 
         var now = Now();
         var seen = DateTime.UtcNow;
@@ -224,7 +229,7 @@ public sealed partial class StatsStore(LiveHub live)
             if (parsed is not null)
                 Remember(nodeId, topic, parsed, seen);
             if (summary.Length > 0)
-                RememberFeed(nodeId, topic, parsed, summary, seen);
+                RememberFeed(nodeId, topic, parsed, summary, kind, seen);
         }
 
         _live.MarkChanged();
@@ -390,6 +395,9 @@ public sealed partial class StatsStore(LiveHub live)
             state.PublishErrors = hello.PublishErrors;
             state.ApplyTelemetry(hello.NoiseFloor, hello.TxAirSecs, hello.RxAirSecs, hello.UptimeSecs, hello.TxQueue, hello.BatteryMv, hello.TempCx10, hello.Firmware, hello.Environment);
         }
+
+        if (message.Type == 3)
+            state.PulseAt = seen;
 
         if (message.Heartbeat is { } beat)
         {
@@ -603,7 +611,7 @@ public sealed partial class StatsStore(LiveHub live)
         return match;
     }
 
-    void RememberFeed(Guid nodeId, string topic, BridgeMessage? message, string summary, DateTime seen)
+    void RememberFeed(Guid nodeId, string topic, BridgeMessage? message, string summary, string kind, DateTime seen)
     {
         if (!_feed.TryGetValue(nodeId, out var queue))
         {
@@ -617,7 +625,8 @@ public sealed partial class StatsStore(LiveHub live)
             seen,
             message?.PublicKey ?? "",
             message?.Name ?? "",
-            summary));
+            summary,
+            kind));
         while (queue.Count > 80)
             queue.Dequeue();
     }
@@ -638,7 +647,7 @@ public sealed partial class StatsStore(LiveHub live)
 
 public sealed record TopicRow(Guid NodeId, string Topic, int MessagesPerMinute, DateTime LastSeen);
 
-public sealed record FeedRow(Guid NodeId, string Topic, DateTime Seen, string PublicKey, string Name, string Summary);
+public sealed record FeedRow(Guid NodeId, string Topic, DateTime Seen, string PublicKey, string Name, string Summary, string Kind);
 
 public sealed record TunnelMap(IReadOnlyList<MapPlace> Nodes, IReadOnlyList<MapHop> Links, IReadOnlyList<MapName> Unplaced);
 
@@ -665,6 +674,7 @@ public sealed class RepeaterState
     public string PublicKey { get; set; } = "";
     public string Name { get; set; } = "";
     public DateTime LastSeen { get; set; }
+    public DateTime? PulseAt { get; set; }
     public DateTime? Clock { get; set; }
     public int? AdvertType { get; set; }
     public string? AdvertName { get; set; }
@@ -717,6 +727,7 @@ public sealed class RepeaterState
             PublicKey,
             Name,
             LastSeen,
+            PulseAt,
             Clock,
             fromAdvert ? AdvertLatitude : HelloLatitude,
             fromAdvert ? AdvertLongitude : HelloLongitude,
@@ -752,6 +763,7 @@ public sealed record RepeaterLive(
     string PublicKey,
     string Name,
     DateTime LastSeen,
+    DateTime? PulseAt,
     DateTime? Clock,
     double? Latitude,
     double? Longitude,
