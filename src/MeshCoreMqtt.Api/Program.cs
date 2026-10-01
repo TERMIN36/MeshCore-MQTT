@@ -201,6 +201,11 @@ api.MapDelete("/devices/{id:guid}", async (Guid id, ClaimsPrincipal principal, C
     await catalog.DeleteDevice(UserId(principal), id, ct);
     return Results.NoContent();
 }).RequireAuthorization();
+api.MapPost("/devices/{id:guid}/move", async (Guid id, MoveDeviceBody body, ClaimsPrincipal principal, Catalog catalog, CancellationToken ct) =>
+{
+    await catalog.MoveDevice(UserId(principal), id, body.SpaceId, ct);
+    return Results.NoContent();
+}).RequireAuthorization();
 api.MapPut("/grants/{id:guid}", async (Guid id, GrantTunnelsBody body, ClaimsPrincipal principal, Catalog catalog, CancellationToken ct) =>
 {
     await catalog.SetTunnels(UserId(principal), id, body.Tunnels ?? [], ct);
@@ -468,5 +473,6 @@ record UpdateUserBody(bool? Disabled, bool? Admin);
 record NodeBody(string? Name, string? Host, int Port, bool Tls);
 record StatusBody(string? Status);
 record MoveBody(Guid NodeId);
+record MoveDeviceBody(Guid SpaceId);
 record CertificateBody(string? Host);
 record KeyBody(string? Pem);

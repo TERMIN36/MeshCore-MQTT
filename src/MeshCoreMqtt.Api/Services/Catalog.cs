@@ -327,6 +327,38 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         await proxy.Drop([device.Username], ct);
     }
 
+    public async Task MoveDevice(Guid userId, Guid deviceId, Guid targetSpaceId, CancellationToken ct)
+    {
+        var device = await db.DeviceLogins.Include(d => d.Space).ThenInclude(s => s.Group).FirstOrDefaultAsync(d => d.Id == deviceId, ct)
+            ?? throw new AppException(404, "Клиент не найден");
+        var source = device.Space;
+        access.Require(await access.OnSpace(userId, source, ct), Privilege.Credentials);
+        if (source.IsMoving)
+            throw new AppException(409, "Этот тунель сейчас переносится");
+        if (source.Id == targetSpaceId)
+            throw new AppException(400, "Репитер уже в этом тунеле");
+
+        var target = await LoadSpace(targetSpaceId, ct);
+        var targetPrivileges = await access.OnSpace(userId, target, ct);
+        if (targetPrivileges == Privilege.None)
+            throw new AppException(404, "Тунель не найден");
+        access.Require(targetPrivileges, Privilege.Credentials);
+        if (device.CanSubscribe && !targetPrivileges.HasFlag(Privilege.Subscribe))
+            throw new AppException(403, "В тунеле назначения нет права на чтение");
+        if (device.CanPublish && !targetPrivileges.HasFlag(Privilege.Publish))
+            throw new AppException(403, "В тунеле назначения нет права на запись");
+        if (target.IsMoving)
+            throw new AppException(409, "Тунель назначения сейчас переносится");
+        if (target.BrokerNode.Status == NodeStatus.Offline)
+            throw new AppException(400, "Узел тунеля назначения выключен");
+
+        device.SpaceId = target.Id;
+        device.Space = target;
+        await db.SaveChangesAsync(ct);
+        cache.Invalidate();
+        await proxy.Drop([device.Username], ct);
+    }
+
     public async Task<object> Grant(Guid actorId, Guid groupId, string? email, CancellationToken ct)
     {
         var group = await LoadGroup(groupId, ct);

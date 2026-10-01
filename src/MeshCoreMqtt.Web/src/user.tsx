@@ -40,7 +40,8 @@ type Live = {
   tempCx10?: number | null;
   firmware?: string | null;
 };
-type Device = { id: string; name: string; createdAt?: string; live?: Live | null };
+type Device = { id: string; name: string; canSubscribe: boolean; canPublish: boolean; createdAt?: string; live?: Live | null };
+type TunnelDestination = { groupId: string; groupName: string; spaceId: string; spaceName: string };
 type Activity = { topic: string; messagesPerMinute: number; lastSeen: string };
 type FeedItem = { topic: string; seen: string; publicKey: string; name: string; summary: string };
 type Login = { id: string; name: string; config: string };
@@ -325,9 +326,22 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                 </section>
                 {device && (space.privileges.includes("credentials") || space.privileges.includes("view")) && (
                   <RepeaterSheet
+                    key={device.id}
                     title={device.name}
                     live={device.live}
                     secret={space.privileges.includes("credentials") ? secrets[device.id] : undefined}
+                    destinations={space.privileges.includes("credentials") ? moveTargets(groups, device, space.id) : undefined}
+                    onMove={space.privileges.includes("credentials") ? async (target) => {
+                      try {
+                        setError("");
+                        await api(`/api/devices/${device.id}/move`, { method: "POST", body: JSON.stringify({ spaceId: target.spaceId }) });
+                        await reload();
+                        go({ groupId: target.groupId, spaceId: target.spaceId, deviceId: device.id }, messages);
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : "Не удалось переместить репитер");
+                        throw err;
+                      }
+                    } : undefined}
                     onDelete={space.privileges.includes("credentials") ? async () => {
                       try {
                         await api(`/api/devices/${device.id}`, { method: "DELETE" });
@@ -575,13 +589,88 @@ function RepeaterFace({ name, live, createdAt }: { name: string; live?: Live | n
   );
 }
 
-function RepeaterSheet({ title, live, secret, onDelete }: {
+function moveTargets(groups: GroupNode[], device: Device, currentSpaceId: string): TunnelDestination[] {
+  const rows: TunnelDestination[] = [];
+  for (const group of groups) {
+    for (const space of group.spaces) {
+      if (space.id === currentSpaceId) continue;
+      if (!space.privileges.includes("credentials")) continue;
+      if (device.canSubscribe && !space.privileges.includes("subscribe")) continue;
+      if (device.canPublish && !space.privileges.includes("publish")) continue;
+      rows.push({ groupId: group.id, groupName: group.name, spaceId: space.id, spaceName: space.name });
+    }
+  }
+  return rows;
+}
+
+function MoveRepeater({ title, destinations, onMove, onClose }: {
+  title: string;
+  destinations: TunnelDestination[];
+  onMove: (target: TunnelDestination) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [spaceId, setSpaceId] = useState(destinations[0]?.spaceId ?? "");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState("");
+  const chosen = destinations.find((item) => item.spaceId === spaceId) ?? null;
+  const buckets = new Map<string, { name: string; spaces: TunnelDestination[] }>();
+  for (const item of destinations) {
+    const bucket = buckets.get(item.groupId) ?? { name: item.groupName, spaces: [] };
+    bucket.spaces.push(item);
+    buckets.set(item.groupId, bucket);
+  }
+  return (
+    <div className="modal-backdrop" onClick={() => { if (!busy) onClose(); }}>
+      <form className="modal-card" role="dialog" aria-modal="true" aria-labelledby="move-repeater-title" onSubmit={async (event) => {
+        event.preventDefault();
+        if (!chosen || busy) return;
+        setBusy(true);
+        setFailed("");
+        try {
+          await onMove(chosen);
+          onClose();
+        } catch (err) {
+          setFailed(err instanceof Error ? err.message : "Не удалось переместить репитер");
+          setBusy(false);
+        }
+      }} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === "Escape" && !busy) onClose(); }}>
+        <h2 id="move-repeater-title">Переместить репитер</h2>
+        <p>Репитер «{title}» отключится и снова выйдет на связь уже в выбранном тунеле. Строка настройки не меняется.</p>
+        {destinations.length === 0 ? (
+          <p className="muted">Нет другого тунеля, куда можно перенести этот репитер.</p>
+        ) : (
+          <label>Тунель
+            <select value={spaceId} onChange={(event) => setSpaceId(event.target.value)} autoFocus disabled={busy}>
+              {[...buckets.entries()].map(([groupId, bucket]) => (
+                <optgroup key={groupId} label={bucket.name}>
+                  {bucket.spaces.map((item) => (
+                    <option key={item.spaceId} value={item.spaceId}>{item.spaceName}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+        )}
+        {failed && <p className="error">{failed}</p>}
+        <div className="row">
+          <button type="button" className="secondary" onClick={onClose} disabled={busy}>Отмена</button>
+          {destinations.length > 0 && <button type="submit" disabled={busy}>{busy ? "Перенос…" : "Переместить"}</button>}
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function RepeaterSheet({ title, live, secret, destinations, onMove, onDelete }: {
   title: string;
   live?: Live | null;
   secret?: Login;
+  destinations?: TunnelDestination[];
+  onMove?: (target: TunnelDestination) => Promise<void>;
   onDelete?: () => Promise<void>;
 }) {
   const [confirm, setConfirm] = useState(false);
+  const [moving, setMoving] = useState(false);
   const coords = place(live?.latitude, live?.longitude);
   const advert = live?.advertType != null ? `${advertLabel(live.advertType)} (${live.advertType})` : EMPTY;
   return (
@@ -591,12 +680,21 @@ function RepeaterSheet({ title, live, secret, onDelete }: {
           <h2>{live?.advertName || live?.name || title}</h2>
           <p className="muted">{live ? `на связи ${new Date(live.lastSeen).toLocaleString()}${live.clock ? ` · часы ${new Date(live.clock).toLocaleString()}` : ""}` : "Нет объявления · статистика ещё не приходила"}</p>
         </div>
-        {onDelete && (
+        {(onMove || onDelete) && (
           <div className="row actions">
-            <button type="button" className="ghost danger" onClick={() => setConfirm(true)}>Удалить репитер</button>
+            {onMove && <button type="button" className="ghost" onClick={() => setMoving(true)}>Переместить</button>}
+            {onDelete && <button type="button" className="ghost danger" onClick={() => setConfirm(true)}>Удалить репитер</button>}
           </div>
         )}
       </div>
+      {moving && onMove && (
+        <MoveRepeater
+          title={live?.advertName || live?.name || title}
+          destinations={destinations ?? []}
+          onClose={() => setMoving(false)}
+          onMove={onMove}
+        />
+      )}
       {confirm && (
         <ConfirmDialog
           title="Удалить репитер"
