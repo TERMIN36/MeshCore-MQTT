@@ -512,7 +512,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
             });
     }
 
-    static readonly object EmptyMap = new { nodes = Array.Empty<object>(), links = Array.Empty<object>(), unplaced = Array.Empty<string>() };
+    static readonly object EmptyMap = new { nodes = Array.Empty<object>(), links = Array.Empty<object>(), unplaced = Array.Empty<object>() };
 
     object MapFor(Space space)
     {
@@ -525,7 +525,9 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 name = place.Name,
                 latitude = place.Latitude,
                 longitude = place.Longitude,
-                repeater = place.Repeater
+                repeater = place.Repeater,
+                mqtt = place.Mqtt,
+                seen = place.Seen
             }),
             links = map.Links.Select(link => new
             {
@@ -533,7 +535,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 to = link.To,
                 seen = link.Seen
             }),
-            unplaced = map.Unplaced
+            unplaced = map.Unplaced.Select(item => new { name = item.Name, seen = item.Seen })
         };
     }
 

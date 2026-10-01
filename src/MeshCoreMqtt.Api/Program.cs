@@ -329,6 +329,8 @@ static async Task InitializeAsync(WebApplication app, AppSecrets secrets)
     await EnsureNameIndexes(db, app.Logger);
     await MigrateGrants(db);
     await db.Database.ExecuteSqlRawAsync("""DROP TABLE IF EXISTS topic_filters""");
+    await MapTables.Ensure(db);
+    await scope.ServiceProvider.GetRequiredService<StatsStore>().LoadMapAsync(db, CancellationToken.None);
 }
 
 static async Task EnsureNameIndexes(AppDb db, ILogger logger)

@@ -1,19 +1,32 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
-type Point = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean };
+type Point = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean; mqtt?: boolean; seen?: string };
 type Edge = { from: string; to: string; seen: string };
+type Ghost = { name: string; seen: string };
 type Space = {
   id: string;
   name: string;
   privileges: string[];
   devices: { id: string; live?: { publicKey: string } | null }[];
-  map?: { nodes: Point[]; links: Edge[]; unplaced?: string[] };
+  map?: { nodes: Point[]; links: Edge[]; unplaced?: Ghost[] };
 };
+
+const AGES = [
+  { id: "1h", label: "1 час", ms: 60 * 60 * 1000 },
+  { id: "3h", label: "3 часа", ms: 3 * 60 * 60 * 1000 },
+  { id: "6h", label: "6 часов", ms: 6 * 60 * 60 * 1000 },
+  { id: "12h", label: "12 часов", ms: 12 * 60 * 60 * 1000 },
+  { id: "24h", label: "24 часа", ms: 24 * 60 * 60 * 1000 },
+  { id: "2d", label: "2 дня", ms: 2 * 24 * 60 * 60 * 1000 },
+  { id: "7d", label: "7 дней", ms: 7 * 24 * 60 * 60 * 1000 },
+  { id: "30d", label: "30 дней", ms: 30 * 24 * 60 * 60 * 1000 }
+];
+const AGE_KEY = "mesh-map-age";
 
 const COLORS = ["#38bdf8", "#a78bfa", "#fbbf24", "#fb7185", "#34d399", "#f472b6"];
 
 type Marker = Point & { spaceId: string; spaceName: string; color: string };
-type Line = { from: string; to: string; spaceId: string; color: string };
+type Line = { from: string; to: string; spaceId: string; color: string; seen: string };
 
 export function GroupMap({ group, onOpenDevice }: {
   group: { id: string; spaces: Space[] };
@@ -22,9 +35,21 @@ export function GroupMap({ group, onOpenDevice }: {
   const host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [view, setView] = useState(() => centerOf(55.751244, 37.618423, 4));
+  const [age, setAge] = useState(readAge);
+  const [now, setNow] = useState(() => Date.now());
   const fitted = useRef("");
 
-  const { markers, lines, tunnels, unplaced } = useMemo(() => collect(group.spaces), [group.spaces]);
+  const gathered = useMemo(() => collect(group.spaces), [group.spaces]);
+  const windowMs = AGES.find((item) => item.id === age)?.ms ?? AGES[4].ms;
+  const { markers, lines, tunnels, unplaced, hidden } = useMemo(
+    () => applyAge(gathered, windowMs, now),
+    [gathered, windowMs, now]
+  );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const node = host.current;
@@ -40,6 +65,7 @@ export function GroupMap({ group, onOpenDevice }: {
     const node = host.current;
     if (!node) return;
     const onWheel = (event: WheelEvent) => {
+      if ((event.target as HTMLElement).closest(".map-tools")) return;
       event.preventDefault();
       const rect = node.getBoundingClientRect();
       const ox = event.clientX - rect.left - rect.width / 2;
@@ -56,13 +82,14 @@ export function GroupMap({ group, onOpenDevice }: {
   }, []);
 
   useEffect(() => {
-    if (size.width === 0 || markers.length === 0 || fitted.current === group.id) return;
-    fitted.current = group.id;
+    const fitKey = group.id + "\n" + age;
+    if (size.width === 0 || markers.length === 0 || fitted.current === fitKey) return;
+    fitted.current = fitKey;
     setView(fit(markers, size.width, size.height));
-  }, [group.id, markers, size.width, size.height]);
+  }, [group.id, age, markers, size.width, size.height]);
 
   function drag(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button, .map-tools")) return;
     const startX = event.clientX;
     const startY = event.clientY;
     const origin = view;
@@ -108,25 +135,37 @@ export function GroupMap({ group, onOpenDevice }: {
           <button
             key={marker.spaceId + marker.publicKey}
             type="button"
-            className={marker.repeater ? "map-node repeater" : "map-node companion"}
+            className={`map-node ${marker.repeater ? "repeater" : "companion"} ${marker.mqtt ? "mqtt" : "lora"}`}
             style={{ left: at.x, top: at.y, borderColor: marker.color }}
-            title={`${marker.name || "узел"} · ${marker.spaceName}`}
+            title={`${marker.name || "узел"} · ${marker.spaceName} · ${marker.mqtt ? "MQTT" : "LoRa"}${ago(marker.seen, now)}`}
             onClick={() => { if (device) onOpenDevice(marker.spaceId, device.id); }}
           >
-            <span>{marker.name || marker.publicKey.slice(0, 4)}</span>
+            <span><b>{marker.mqtt ? "MQTT" : "LoRa"}</b><em>{marker.name || marker.publicKey.slice(0, 4)}</em></span>
           </button>
         );
       })}
       <div className="group-map-legend">
-        <p>Тунель — пространство. Узел — участник, у которого в трафике есть координаты. Линия — шаг маршрута. Квадрат — репитер.</p>
+        <p><i className="swatch mqtt" />MQTT — репитер этого тунеля</p>
+        <p><i className="swatch lora" />LoRa — узел по радио. Квадрат — репитер, круг — остальные.</p>
+        <p>Рамка и линия окрашены по тунелю. Линия — шаг маршрута по радио.</p>
         {tunnels.length === 0 && <p>Тунелей с просмотром нет.</p>}
-        {markers.length === 0 && tunnels.length > 0 && <p>Участников с координатами ещё нет.</p>}
-        {unplaced.length > 0 && <p>Без координат: {unplaced.join(", ")}</p>}
+        {markers.length === 0 && tunnels.length > 0 && hidden === 0 && <p>Участников с координатами ещё нет.</p>}
+        {markers.length === 0 && hidden > 0 && <p>В выбранном сроке узлов с координатами нет.</p>}
+        {unplaced.length > 0 && <p>Без координат: {unplaced.map((item) => item.name).join(", ")}</p>}
+        {hidden > 0 && <p>Скрыто старше срока: {hidden}</p>}
         {tunnels.map((item) => (
           <p key={item.id}><i style={{ background: item.color }} />{item.name}</p>
         ))}
       </div>
-      <button type="button" className="secondary map-fit" onClick={() => markers.length > 0 && size.width > 0 && setView(fit(markers, size.width, size.height))}>Вся сеть</button>
+      <div className="map-tools">
+        <label className="map-age">
+          <span>Срок</span>
+          <select aria-label="Порог устаревания" value={AGES.some((item) => item.id === age) ? age : "24h"} onChange={(event) => chooseAge(event.target.value, setAge)}>
+            {AGES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+          </select>
+        </label>
+        <button type="button" className="secondary map-fit" onClick={() => markers.length > 0 && size.width > 0 && setView(fit(markers, size.width, size.height))}>Вся сеть</button>
+      </div>
       <p className="map-credit">© OpenStreetMap</p>
     </div>
   );
@@ -138,7 +177,7 @@ function collect(spaces: Space[]) {
   const color = new Map(tunnels.map((item) => [item.id, item.color]));
   const markers: Marker[] = [];
   const lines: Line[] = [];
-  const unplaced: string[] = [];
+  const unplaced: Ghost[] = [];
   for (const space of visible) {
     for (const node of space.map?.nodes ?? []) {
       markers.push({ ...node, spaceId: space.id, spaceName: space.name, color: color.get(space.id) ?? COLORS[0] });
@@ -146,11 +185,55 @@ function collect(spaces: Space[]) {
     for (const link of space.map?.links ?? []) {
       lines.push({ ...link, spaceId: space.id, color: color.get(space.id) ?? COLORS[0] });
     }
-    for (const name of space.map?.unplaced ?? []) {
-      if (!unplaced.includes(name)) unplaced.push(name);
+    for (const ghost of space.map?.unplaced ?? []) {
+      if (!unplaced.some((item) => item.name === ghost.name)) unplaced.push(ghost);
     }
   }
   return { markers, lines, tunnels, unplaced };
+}
+
+function applyAge(data: ReturnType<typeof collect>, windowMs: number, now: number) {
+  const markers = data.markers.filter((item) => fresh(item.seen, windowMs, now));
+  const placed = new Set(markers.map((item) => item.spaceId + "\n" + item.publicKey.toLowerCase()));
+  const lines = data.lines.filter((line) =>
+    fresh(line.seen, windowMs, now) &&
+    placed.has(line.spaceId + "\n" + line.from.toLowerCase()) &&
+    placed.has(line.spaceId + "\n" + line.to.toLowerCase()));
+  const unplaced = data.unplaced.filter((item) => fresh(item.seen, windowMs, now));
+  return { markers, lines, tunnels: data.tunnels, unplaced, hidden: data.markers.length - markers.length };
+}
+
+function fresh(seen: string | undefined, windowMs: number, now: number) {
+  if (!seen) return true;
+  const at = Date.parse(seen);
+  if (!Number.isFinite(at)) return true;
+  return now - at <= windowMs;
+}
+
+function ago(seen: string | undefined, now: number) {
+  if (!seen) return "";
+  const at = Date.parse(seen);
+  if (!Number.isFinite(at)) return "";
+  const mins = Math.max(0, Math.round((now - at) / 60000));
+  if (mins < 1) return " · только что";
+  if (mins < 60) return ` · ${mins} мин назад`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return ` · ${hours} ч назад`;
+  return ` · ${Math.round(hours / 24)} дн назад`;
+}
+
+function readAge() {
+  try {
+    const stored = localStorage.getItem(AGE_KEY);
+    return AGES.some((item) => item.id === stored) ? stored! : "24h";
+  } catch {
+    return "24h";
+  }
+}
+
+function chooseAge(id: string, setAge: (value: string) => void) {
+  setAge(id);
+  try { localStorage.setItem(AGE_KEY, id); } catch { /* браузер мог запретить хранилище */ }
 }
 
 function centerOf(latitude: number, longitude: number, zoom: number) {

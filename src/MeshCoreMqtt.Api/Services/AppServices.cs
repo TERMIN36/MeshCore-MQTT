@@ -175,15 +175,22 @@ public sealed class TopicRuntime
     public HitWindow Messages { get; } = new();
 }
 
-public sealed class StatsStore(LiveHub live)
+public sealed partial class StatsStore(LiveHub live)
 {
+    public static readonly TimeSpan MapKeep = TimeSpan.FromDays(30);
+    const int MapNodeCap = 8000;
+    const int MapLinkCap = 12000;
+
     readonly LiveHub _live = live;
     readonly Dictionary<Guid, NodeRuntime> _nodes = new();
     readonly Dictionary<(Guid NodeId, string Topic), TopicRuntime> _topics = new();
     readonly Dictionary<(Guid NodeId, string PublicKey), RepeaterState> _repeaters = new();
-    readonly Dictionary<(Guid NodeId, string Tunnel, string PublicKey), HeardNode> _heard = new();
-    readonly Dictionary<(Guid NodeId, string Tunnel, string From, string To), DateTime> _paths = new();
+    readonly Dictionary<(Guid NodeId, string Tunnel, string PublicKey), MapNode> _mapNodes = new();
+    readonly Dictionary<(Guid NodeId, string Tunnel, string From, string To), DateTime> _mapLinks = new();
+    readonly HashSet<(Guid NodeId, string Tunnel, string PublicKey)> _dirtyNodes = new();
+    readonly HashSet<(Guid NodeId, string Tunnel, string From, string To)> _dirtyLinks = new();
     readonly Dictionary<Guid, Queue<FeedRow>> _feed = new();
+    DateTime _mapPruned = DateTime.MinValue;
 
     public void RecordMessage(Guid nodeId, string topic, ReadOnlySpan<byte> payload)
     {
@@ -291,31 +298,29 @@ public sealed class StatsStore(LiveHub live)
 
     public TunnelMap Map(Guid nodeId, string tunnel)
     {
+        var cutoff = DateTime.UtcNow - MapKeep;
         lock (_nodes)
         {
             var known = new Dictionary<string, MapPlace>(StringComparer.OrdinalIgnoreCase);
-            foreach (var state in _repeaters.Values)
+            foreach (var pair in _mapNodes)
             {
-                if (state.NodeId != nodeId || !state.Topic.StartsWith(tunnel + "/", StringComparison.Ordinal))
+                if (pair.Key.NodeId != nodeId || pair.Key.Tunnel != tunnel || pair.Value.Seen < cutoff)
                     continue;
-                known[state.PublicKey] = PlaceFrom(state);
+                var node = pair.Value;
+                known[pair.Key.PublicKey] = new MapPlace(
+                    pair.Key.PublicKey,
+                    node.Name,
+                    node.Latitude,
+                    node.Longitude,
+                    node.Repeater,
+                    node.Mqtt,
+                    node.Seen);
             }
 
-            foreach (var pair in _heard)
+            var edges = new Dictionary<string, (string From, string To, DateTime Seen)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in _mapLinks)
             {
-                if (pair.Key.NodeId != nodeId || pair.Key.Tunnel != tunnel)
-                    continue;
-                if (!known.TryGetValue(pair.Key.PublicKey, out var place))
-                    known[pair.Key.PublicKey] = PlaceFrom(pair.Key.PublicKey, pair.Value);
-                else
-                    known[pair.Key.PublicKey] = Merge(place, pair.Value);
-            }
-
-            var links = new List<MapHop>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var pair in _paths)
-            {
-                if (pair.Key.NodeId != nodeId || pair.Key.Tunnel != tunnel)
+                if (pair.Key.NodeId != nodeId || pair.Key.Tunnel != tunnel || pair.Value < cutoff)
                     continue;
                 var from = Resolve(pair.Key.From, known.Keys);
                 var to = Resolve(pair.Key.To, known.Keys);
@@ -324,25 +329,32 @@ public sealed class StatsStore(LiveHub live)
                 if (!Placed(known, from) || !Placed(known, to))
                     continue;
                 var key = string.Compare(from, to, StringComparison.OrdinalIgnoreCase) < 0 ? from + "\n" + to : to + "\n" + from;
-                if (!seen.Add(key))
+                if (edges.TryGetValue(key, out var previous) && previous.Seen >= pair.Value)
                     continue;
-                links.Add(new MapHop(from, to, pair.Value));
+                edges[key] = (from, to, pair.Value);
             }
 
             return new TunnelMap(
                 known.Values.Where(Placed).ToList(),
-                links,
-                known.Values.Where(place => !Placed(place)).Select(place => place.Name.Length > 0 ? place.Name : place.PublicKey[..8]).Take(12).ToList());
+                edges.Values.Select(edge => new MapHop(edge.From, edge.To, edge.Seen)).ToList(),
+                known.Values.Where(place => !Placed(place))
+                    .OrderByDescending(place => place.Seen)
+                    .Take(24)
+                    .Select(place => new MapName(
+                        place.Name.Length > 0 ? place.Name : place.PublicKey[..Math.Min(8, place.PublicKey.Length)],
+                        place.Seen))
+                    .ToList());
         }
     }
 
     void Remember(Guid nodeId, string topic, BridgeMessage message, DateTime seen)
     {
-        if (MeshTopics.TryPrefix(topic, out var tunnel))
+        var onMap = MeshTopics.TryPrefix(topic, out var tunnel);
+        if (onMap)
         {
-            RememberHeard(nodeId, tunnel, message, seen);
-            RememberDiscovered(nodeId, tunnel, message, seen);
-            RememberPath(nodeId, tunnel, message, seen);
+            NoteAdvert(nodeId, tunnel, message, seen);
+            NoteDiscovered(nodeId, tunnel, message, seen);
+            NotePath(nodeId, tunnel, message, seen);
         }
 
         if (_repeaters.Count >= 2000 && !_repeaters.ContainsKey((nodeId, message.PublicKey)))
@@ -404,53 +416,59 @@ public sealed class StatsStore(LiveHub live)
                 ? seen
                 : DateTimeOffset.FromUnixTimeSeconds(advert.Timestamp).UtcDateTime;
         }
+
+        if (onMap)
+            NoteMqtt(nodeId, tunnel, state);
     }
 
-    void RememberHeard(Guid nodeId, string tunnel, BridgeMessage message, DateTime seen)
+    void NoteMqtt(Guid nodeId, string tunnel, RepeaterState state)
     {
-        if (message.Packet?.Advert is not { } advert)
+        if (state.PublicKey.Length == 0)
             return;
-        var key = (nodeId, tunnel, advert.PublicKey.ToLowerInvariant());
-        if (_heard.Count >= 4000 && !_heard.ContainsKey(key))
-            return;
-        if (!_heard.TryGetValue(key, out var heard))
+        var node = EnsureNode(nodeId, tunnel, state.PublicKey);
+        var place = PlaceFrom(state);
+        if (place.Name.Length > 0)
+            node.Name = Clip(place.Name, 120);
+        if (place.Latitude is not null && place.Longitude is not null)
         {
-            heard = new HeardNode();
-            _heard[key] = heard;
+            node.Latitude = place.Latitude;
+            node.Longitude = place.Longitude;
         }
 
-        heard.Type = advert.Type;
-        if (advert.Name.Length > 0)
-            heard.Name = advert.Name;
-        if (advert.Latitude is { } lat && advert.Longitude is { } lon)
-        {
-            heard.Latitude = lat;
-            heard.Longitude = lon;
-        }
-
-        heard.Seen = seen;
+        node.Repeater = true;
+        node.Mqtt = true;
+        node.Seen = state.LastSeen;
     }
 
-    void RememberDiscovered(Guid nodeId, string tunnel, BridgeMessage message, DateTime seen)
+    void NoteAdvert(Guid nodeId, string tunnel, BridgeMessage message, DateTime seen)
+    {
+        if (message.Packet?.Advert is not { } advert || advert.PublicKey.Length == 0)
+            return;
+        var node = EnsureNode(nodeId, tunnel, advert.PublicKey);
+        if (advert.Name.Length > 0)
+            node.Name = Clip(advert.Name, 120);
+        if (advert.Latitude is { } lat && advert.Longitude is { } lon && (!node.Mqtt || node.Latitude is null))
+        {
+            node.Latitude = lat;
+            node.Longitude = lon;
+        }
+
+        if (!node.Mqtt)
+            node.Repeater = advert.Type is 2 or 3;
+        node.Seen = seen;
+    }
+
+    void NoteDiscovered(Guid nodeId, string tunnel, BridgeMessage message, DateTime seen)
     {
         if (message.Packet?.NodeKey is not { Length: 32 } key)
             return;
-        var publicKey = Convert.ToHexString(key).ToLowerInvariant();
-        var entry = (nodeId, tunnel, publicKey);
-        if (_heard.Count >= 4000 && !_heard.ContainsKey(entry))
-            return;
-        if (!_heard.TryGetValue(entry, out var heard))
-        {
-            heard = new HeardNode();
-            _heard[entry] = heard;
-        }
-
-        if (heard.Name.Length == 0 && message.Packet?.NodeType is { } type)
-            heard.Type = type;
-        heard.Seen = seen;
+        var node = EnsureNode(nodeId, tunnel, Convert.ToHexString(key));
+        if (!node.Mqtt && node.Name.Length == 0 && message.Packet?.NodeType is { } type)
+            node.Repeater = type is 2 or 3;
+        node.Seen = seen;
     }
 
-    void RememberPath(Guid nodeId, string tunnel, BridgeMessage message, DateTime seen)
+    void NotePath(Guid nodeId, string tunnel, BridgeMessage message, DateTime seen)
     {
         if (message.Packet is not { } packet || packet.PayloadType == 11 || !packet.RouteParsed)
             return;
@@ -470,15 +488,108 @@ public sealed class StatsStore(LiveHub live)
             KeepHop(nodeId, tunnel, chain[i], chain[i + 1], seen);
     }
 
+    MapNode EnsureNode(Guid nodeId, string tunnel, string publicKey)
+    {
+        var key = (nodeId, Clip(tunnel, 80), Clip(publicKey.ToLowerInvariant(), 64));
+        if (!_mapNodes.TryGetValue(key, out var node))
+        {
+            if (_mapNodes.Count >= MapNodeCap)
+                DropOldestNode();
+            node = new MapNode();
+            _mapNodes[key] = node;
+        }
+
+        _dirtyNodes.Add(key);
+        return node;
+    }
+
     void KeepHop(Guid nodeId, string tunnel, string from, string to, DateTime seen)
     {
         if (from.Length == 0 || to.Length == 0 || string.Equals(from, to, StringComparison.OrdinalIgnoreCase))
             return;
-        var key = (nodeId, tunnel, from.ToLowerInvariant(), to.ToLowerInvariant());
-        if (_paths.Count >= 8000 && !_paths.ContainsKey(key))
+        var key = (NodeId: nodeId, Tunnel: Clip(tunnel, 80), From: Clip(from.ToLowerInvariant(), 64), To: Clip(to.ToLowerInvariant(), 64));
+        if (_mapLinks.TryGetValue(key, out var previous) && previous >= seen)
             return;
-        _paths[key] = seen;
+        if (!_mapLinks.ContainsKey(key) && _mapLinks.Count >= MapLinkCap)
+            DropOldestLink();
+        _mapLinks[key] = seen;
+        _dirtyLinks.Add(key);
+        TouchEnd(nodeId, key.Tunnel, key.From, seen);
+        TouchEnd(nodeId, key.Tunnel, key.To, seen);
     }
+
+    void TouchEnd(Guid nodeId, string tunnel, string token, DateTime seen)
+    {
+        (Guid NodeId, string Tunnel, string PublicKey)? matchKey = null;
+        foreach (var pair in _mapNodes)
+        {
+            if (pair.Key.NodeId != nodeId || pair.Key.Tunnel != tunnel)
+                continue;
+            if (!pair.Key.PublicKey.StartsWith(token, StringComparison.Ordinal))
+                continue;
+            if (matchKey is not null)
+                return;
+            matchKey = pair.Key;
+        }
+
+        if (matchKey is not { } found || !_mapNodes.TryGetValue(found, out var node) || node.Seen >= seen)
+            return;
+        node.Seen = seen;
+        _dirtyNodes.Add(found);
+    }
+
+    void DropOldestNode()
+    {
+        (Guid NodeId, string Tunnel, string PublicKey)? oldest = null;
+        var seen = DateTime.MaxValue;
+        foreach (var pair in _mapNodes)
+        {
+            if (pair.Value.Seen >= seen)
+                continue;
+            seen = pair.Value.Seen;
+            oldest = pair.Key;
+        }
+
+        if (oldest is not { } key)
+            return;
+        _mapNodes.Remove(key);
+        _dirtyNodes.Remove(key);
+    }
+
+    void DropOldestLink()
+    {
+        (Guid NodeId, string Tunnel, string From, string To)? oldest = null;
+        var seen = DateTime.MaxValue;
+        foreach (var pair in _mapLinks)
+        {
+            if (pair.Value >= seen)
+                continue;
+            seen = pair.Value;
+            oldest = pair.Key;
+        }
+
+        if (oldest is not { } key)
+            return;
+        _mapLinks.Remove(key);
+        _dirtyLinks.Remove(key);
+    }
+
+    void DropExpired(DateTime cutoff)
+    {
+        foreach (var key in _mapNodes.Where(pair => pair.Value.Seen < cutoff).Select(pair => pair.Key).ToList())
+        {
+            _mapNodes.Remove(key);
+            _dirtyNodes.Remove(key);
+        }
+
+        foreach (var key in _mapLinks.Where(pair => pair.Value < cutoff).Select(pair => pair.Key).ToList())
+        {
+            _mapLinks.Remove(key);
+            _dirtyLinks.Remove(key);
+        }
+    }
+
+    static string Clip(string value, int max) => value.Length <= max ? value : value[..max];
 
     static bool Placed(MapPlace place) => place.Latitude is not null && place.Longitude is not null;
 
@@ -494,18 +605,9 @@ public sealed class StatsStore(LiveHub live)
             name,
             fromAdvert ? state.AdvertLatitude : state.HelloLatitude,
             fromAdvert ? state.AdvertLongitude : state.HelloLongitude,
-            true);
-    }
-
-    static MapPlace PlaceFrom(string publicKey, HeardNode heard) =>
-        new(publicKey, heard.Name, heard.Latitude, heard.Longitude, heard.Type is 2 or 3);
-
-    static MapPlace Merge(MapPlace place, HeardNode heard)
-    {
-        var name = heard.Name.Length > 0 ? heard.Name : place.Name;
-        var latitude = place.Latitude ?? heard.Latitude;
-        var longitude = place.Longitude ?? heard.Longitude;
-        return place with { Name = name, Latitude = latitude, Longitude = longitude };
+            true,
+            true,
+            state.LastSeen);
     }
 
     static string? Resolve(string token, IEnumerable<string> keys)
@@ -560,19 +662,22 @@ public sealed record TopicRow(Guid NodeId, string Topic, int MessagesPerMinute, 
 
 public sealed record FeedRow(Guid NodeId, string Topic, DateTime Seen, string PublicKey, string Name, string Summary);
 
-public sealed record TunnelMap(IReadOnlyList<MapPlace> Nodes, IReadOnlyList<MapHop> Links, IReadOnlyList<string> Unplaced);
+public sealed record TunnelMap(IReadOnlyList<MapPlace> Nodes, IReadOnlyList<MapHop> Links, IReadOnlyList<MapName> Unplaced);
 
-public sealed record MapPlace(string PublicKey, string Name, double? Latitude, double? Longitude, bool Repeater);
+public sealed record MapPlace(string PublicKey, string Name, double? Latitude, double? Longitude, bool Repeater, bool Mqtt, DateTime Seen);
+
+public sealed record MapName(string Name, DateTime Seen);
 
 public sealed record MapHop(string From, string To, DateTime Seen);
 
-public sealed class HeardNode
+sealed class MapNode
 {
-    public string Name { get; set; } = "";
-    public int Type { get; set; }
-    public double? Latitude { get; set; }
-    public double? Longitude { get; set; }
-    public DateTime Seen { get; set; }
+    public string Name = "";
+    public double? Latitude;
+    public double? Longitude;
+    public bool Repeater;
+    public bool Mqtt;
+    public DateTime Seen;
 }
 
 public sealed class RepeaterState
