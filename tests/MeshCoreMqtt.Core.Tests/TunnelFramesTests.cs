@@ -69,6 +69,40 @@ public class TunnelFramesTests
     }
 
     [Fact]
+    public void Publish_of_a_bridge_frame_exposes_the_repeater_key()
+    {
+        var frame = new List<byte> { 1, 2 };
+        frame.AddRange(Enumerable.Repeat((byte)0xAB, 32));
+        frame.Add(0);
+        frame.AddRange(new byte[4]);
+        frame.Add(0);
+        frame.Add(0);
+        frame.Add(0);
+        var expected = string.Concat(Enumerable.Repeat("ab", 32));
+
+        Assert.True(TunnelFrames.TryPublisherKey(Publish("out", frame.ToArray()), 4, out var found));
+        Assert.Equal(expected, found);
+
+        var qos1 = new MemoryStream();
+        WriteString(qos1, "out");
+        qos1.WriteByte(0);
+        qos1.WriteByte(7);
+        qos1.Write(frame.ToArray());
+        Assert.True(TunnelFrames.TryPublisherKey(Pack(0x32, qos1.ToArray()), 4, out var withId));
+        Assert.Equal(expected, withId);
+
+        var mqtt5 = new MemoryStream();
+        WriteString(mqtt5, "out");
+        mqtt5.WriteByte(0);
+        mqtt5.Write(frame.ToArray());
+        Assert.True(TunnelFrames.TryPublisherKey(Pack(0x30, mqtt5.ToArray()), 5, out var version5));
+        Assert.Equal(expected, version5);
+
+        Assert.False(TunnelFrames.TryPublisherKey(Publish("out", "hello"), 4, out _));
+        Assert.False(TunnelFrames.TryPublisherKey(Subscribe("#"), 4, out _));
+    }
+
+    [Fact]
     public void Waits_for_the_rest_of_a_split_packet()
     {
         var packet = Publish("pk", "body");
@@ -92,12 +126,13 @@ public class TunnelFramesTests
         return Pack(0x10, body.ToArray());
     }
 
-    static byte[] Publish(string topic, string payload)
+    static byte[] Publish(string topic, string payload) => Publish(topic, Encoding.UTF8.GetBytes(payload));
+
+    static byte[] Publish(string topic, byte[] payload)
     {
         var body = new MemoryStream();
         WriteString(body, topic);
-        var bytes = Encoding.UTF8.GetBytes(payload);
-        body.Write(bytes);
+        body.Write(payload);
         return Pack(0x30, body.ToArray());
     }
 

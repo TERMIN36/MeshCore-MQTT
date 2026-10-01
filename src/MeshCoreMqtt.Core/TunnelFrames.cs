@@ -51,6 +51,41 @@ public static class TunnelFrames
         return FrameStatus.Ok;
     }
 
+    public static bool TryPublisherKey(ReadOnlySpan<byte> data, byte protocolLevel, out string publicKey)
+    {
+        publicKey = "";
+        if (data.Length < 2 || (data[0] >> 4) != 3)
+            return false;
+        var qos = (data[0] >> 1) & 0x03;
+        if (qos > 2)
+            return false;
+
+        var lengthStatus = TryRemainingLength(data[1..], out var remaining, out var lengthBytes);
+        if (lengthStatus != LengthStatus.Ok)
+            return false;
+        var packetLength = 1 + lengthBytes + remaining;
+        if (data.Length < packetLength)
+            return false;
+
+        var body = data.Slice(1 + lengthBytes, remaining);
+        var offset = 0;
+        if (!TryBytes(body, ref offset, out _))
+            return false;
+        if (qos > 0)
+        {
+            if (offset + 2 > body.Length)
+                return false;
+            offset += 2;
+        }
+
+        if (protocolLevel == 5 && !TrySkipProperties(body, ref offset))
+            return false;
+        if (offset > body.Length || !BridgeFrames.TryDecode(body[offset..], out var message) || message.PublicKey.Length == 0)
+            return false;
+        publicKey = message.PublicKey;
+        return true;
+    }
+
     static FrameStatus RewriteConnect(byte header, ReadOnlySpan<byte> body, string prefix, out byte[] output)
     {
         output = [];

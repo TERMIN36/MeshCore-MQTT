@@ -9,7 +9,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace MeshCoreMqtt.Api.Services;
 
-public sealed class Catalog(AppDb db, Access access, Passwords passwords, DecisionCache cache, StatsStore stats, ProxyNotifier proxy, IOptions<AppSecrets> secrets)
+public sealed class Catalog(AppDb db, Access access, Passwords passwords, DecisionCache cache, StatsStore stats, ProxyNotifier proxy, LiveHub live, IOptions<AppSecrets> secrets)
 {
     public async Task<object> Login(string? email, string? password, CancellationToken ct)
     {
@@ -378,6 +378,37 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         await proxy.Drop([device.Username], ct);
     }
 
+    public async Task<bool> BindPublisher(string? username, string? publicKey, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(username) || publicKey is not { Length: 64 } || !IsHex(publicKey))
+            return false;
+        var key = publicKey.ToLowerInvariant();
+        var device = await db.DeviceLogins.FirstOrDefaultAsync(d => d.Username == username, ct);
+        if (device is null)
+            return false;
+        if (string.Equals(device.PublicKey, key, StringComparison.Ordinal))
+            return true;
+
+        var others = await db.DeviceLogins.Where(row => row.Id != device.Id && row.PublicKey == key).ToListAsync(ct);
+        foreach (var other in others)
+            other.PublicKey = "";
+        device.PublicKey = key;
+        await db.SaveChangesAsync(ct);
+        live.MarkChanged();
+        return true;
+    }
+
+    static bool IsHex(string value)
+    {
+        foreach (var letter in value)
+        {
+            if (letter is not (>= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F'))
+                return false;
+        }
+
+        return true;
+    }
+
     public async Task<object> Grant(Guid actorId, Guid groupId, string? email, CancellationToken ct)
     {
         var group = await LoadGroup(groupId, ct);
@@ -640,37 +671,30 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
 
     static Dictionary<Guid, RepeaterLive?> MatchDevices(IReadOnlyList<DeviceLogin> devices, IReadOnlyList<RepeaterLive> heard)
     {
-        var result = devices.ToDictionary(device => device.Id, _ => (RepeaterLive?)null);
-        var remaining = heard.ToList();
-        foreach (var device in devices.Where(item => item.DisplayName.Length > 0))
+        var cards = devices.Select(device => new RepeaterCard(device.Id, device.DisplayName, device.PublicKey)).ToList();
+        var nodes = heard.Select(node => new HeardRepeater(node.PublicKey, node.Name, node.AdvertName, Announced(node), node.LastSeen)).ToList();
+        var keys = RepeaterCards.Match(cards, nodes);
+        var byKey = new Dictionary<string, RepeaterLive>(StringComparer.OrdinalIgnoreCase);
+        foreach (var node in heard)
         {
-            var named = remaining
-                .Where(node => NamesMatch(device.DisplayName, node))
-                .OrderByDescending(node => node.LastSeen)
-                .FirstOrDefault();
-            if (named is null)
-                continue;
-            result[device.Id] = named;
-            remaining.Remove(named);
+            if (!byKey.TryGetValue(node.PublicKey, out var previous) || node.LastSeen >= previous.LastSeen)
+                byKey[node.PublicKey] = node;
         }
 
-        var unmatched = devices.Where(device => result[device.Id] is null).ToList();
-        // Приветствие и пульс шлёт сам репитер. Остальные ключи — соседи, которых он уже слышал.
-        var announced = remaining.Where(Announced).ToList();
-        if (unmatched.Count == 1 && announced.Count == 1)
-            result[unmatched[0].Id] = announced[0];
-        else if (unmatched.Count == 1 && remaining.Count == 1)
-            result[unmatched[0].Id] = remaining[0];
+        var result = new Dictionary<Guid, RepeaterLive?>();
+        foreach (var device in devices)
+        {
+            result[device.Id] = keys.TryGetValue(device.Id, out var key) && key is not null && byKey.TryGetValue(key, out var live)
+                ? live
+                : null;
+        }
+
         return result;
     }
 
     static bool Announced(RepeaterLive node) =>
         node.FrequencyHz is not null || node.BandwidthHz is not null || node.SpreadingFactor is not null ||
         node.Forwarding is not null || node.PacketsPublished is not null || node.PacketsInbound is not null;
-
-    static bool NamesMatch(string name, RepeaterLive node) =>
-        (node.Name.Length > 0 && string.Equals(node.Name, name, StringComparison.OrdinalIgnoreCase)) ||
-        (node.AdvertName is { Length: > 0 } advert && string.Equals(advert, name, StringComparison.OrdinalIgnoreCase));
 
     static string DeviceTitle(DeviceLogin device, RepeaterLive? live) =>
         LiveName(live) ?? (device.DisplayName.Length > 0 ? device.DisplayName : "Репитер");

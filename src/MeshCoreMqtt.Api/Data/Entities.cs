@@ -74,6 +74,7 @@ public sealed class DeviceLogin
     public Guid SpaceId { get; set; }
     public Space Space { get; set; } = null!;
     public string DisplayName { get; set; } = "";
+    public string PublicKey { get; set; } = "";
     public string Username { get; set; } = "";
     public string PasswordHash { get; set; } = "";
     public bool CanSubscribe { get; set; }

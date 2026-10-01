@@ -52,6 +52,7 @@ public sealed class AppDb(DbContextOptions<AppDb> options) : DbContext(options)
         {
             e.ToTable("device_logins");
             e.Property(x => x.DisplayName).HasMaxLength(200);
+            e.Property(x => x.PublicKey).HasMaxLength(64);
             e.Property(x => x.Username).HasMaxLength(64);
             e.HasIndex(x => x.Username).IsUnique();
             e.HasOne(x => x.Space).WithMany(x => x.Devices).HasForeignKey(x => x.SpaceId).OnDelete(DeleteBehavior.Cascade);

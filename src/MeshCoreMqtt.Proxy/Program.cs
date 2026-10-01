@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<RouteTable>();
 builder.Services.AddSingleton<Sessions>();
 builder.Services.AddSingleton<ServerCertificate>();
+builder.Services.AddSingleton<PublisherNotes>();
 builder.Services.AddHostedService<MqttFront>();
 var app = builder.Build();
 var token = builder.Configuration["Internal:Token"] ?? "";
@@ -131,7 +132,48 @@ sealed class RouteTable
     }
 }
 
-sealed class MqttFront(IConfiguration configuration, Sessions sessions, RouteTable routes, ServerCertificate certificate, ILogger<MqttFront> log) : BackgroundService
+sealed class PublisherNotes(IConfiguration configuration, ILogger<PublisherNotes> log)
+{
+    readonly string _api = configuration["Api:Url"] ?? "http://api:8080";
+    readonly string _token = configuration["Internal:Token"] ?? "";
+    readonly ConcurrentDictionary<string, string> _keys = new(StringComparer.Ordinal);
+    readonly ConcurrentDictionary<string, byte> _busy = new(StringComparer.Ordinal);
+    readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+    public void Seen(string username, string publicKey)
+    {
+        if (publicKey.Length != 64)
+            return;
+        if (_keys.TryGetValue(username, out var known) && string.Equals(known, publicKey, StringComparison.OrdinalIgnoreCase))
+            return;
+        if (!_busy.TryAdd(username, 0))
+            return;
+        _ = Send(username, publicKey.ToLowerInvariant());
+    }
+
+    async Task Send(string username, string publicKey)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{_api.TrimEnd('/')}/internal/mqtt/identity");
+            request.Headers.TryAddWithoutValidation("X-Internal-Token", _token);
+            request.Content = JsonContent.Create(new { username, publicKey });
+            using var response = await _http.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+                _keys[username] = publicKey;
+        }
+        catch (Exception ex)
+        {
+            log.LogDebug(ex, "Не удалось запомнить ключ репитера");
+        }
+        finally
+        {
+            _busy.TryRemove(username, out _);
+        }
+    }
+}
+
+sealed class MqttFront(IConfiguration configuration, Sessions sessions, RouteTable routes, ServerCertificate certificate, PublisherNotes publishers, ILogger<MqttFront> log) : BackgroundService
 {
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -206,8 +248,8 @@ sealed class MqttFront(IConfiguration configuration, Sessions sessions, RouteTab
                 try { backendTcp.Close(); } catch { /* уже закрыт */ }
             });
             var prefix = route.Prefix;
-            var left = Pump(ssl, backend, true, prefix, protocolLevel, stoppingToken);
-            var right = Pump(backend, ssl, false, prefix, protocolLevel, stoppingToken);
+            var left = Pump(ssl, backend, true, prefix, protocolLevel, key => publishers.Seen(username, key), stoppingToken);
+            var right = Pump(backend, ssl, false, prefix, protocolLevel, null, stoppingToken);
             await Task.WhenAny(left, right);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -256,7 +298,7 @@ sealed class MqttFront(IConfiguration configuration, Sessions sessions, RouteTab
         return buffer.ToArray();
     }
 
-    static async Task Pump(Stream from, Stream to, bool toBroker, string prefix, byte protocolLevel, CancellationToken ct)
+    static async Task Pump(Stream from, Stream to, bool toBroker, string prefix, byte protocolLevel, Action<string>? onPublisher, CancellationToken ct)
     {
         var pending = new byte[ConnectReader.MaxPacketBytes + 8];
         var size = 0;
@@ -279,6 +321,8 @@ sealed class MqttFront(IConfiguration configuration, Sessions sessions, RouteTab
                     break;
                 if (status != FrameStatus.Ok || consumed <= 0)
                     throw new IOException("Некорректный MQTT-пакет");
+                if (toBroker && onPublisher is not null && TunnelFrames.TryPublisherKey(pending.AsSpan(offset, consumed), protocolLevel, out var publicKey))
+                    onPublisher(publicKey);
                 if (output.Length > 0)
                     await to.WriteAsync(output, ct);
                 offset += consumed;

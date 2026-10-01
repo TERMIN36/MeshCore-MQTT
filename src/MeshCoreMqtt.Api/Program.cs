@@ -115,6 +115,14 @@ app.MapGet("/internal/mqtt/route", async (string username, HttpRequest request, 
     var route = await gate.Route(username, ct);
     return route is null ? Results.NotFound() : Results.Ok(new { host = route.Host, port = route.Port, tls = route.Tls, prefix = route.Prefix });
 });
+app.MapPost("/internal/mqtt/identity", async (IdentityBody body, HttpRequest request, Catalog catalog, CancellationToken ct) =>
+{
+    var token = request.Headers["X-Internal-Token"].ToString();
+    if (!SecretText.FixedEquals(token, secrets.InternalToken))
+        return Results.Unauthorized();
+    var stored = await catalog.BindPublisher(body.Username, body.PublicKey, ct);
+    return stored ? Results.NoContent() : Results.NotFound();
+});
 
 var api = app.MapGroup("/api");
 api.MapPost("/auth/login", async (LoginBody body, Catalog catalog, CancellationToken ct) =>
@@ -299,6 +307,7 @@ static async Task InitializeAsync(WebApplication app, AppSecrets secrets)
     }
 
     await EnsureUserColumns(db);
+    await EnsureDeviceColumns(db);
 
     if (!await db.Users.AnyAsync(u => u.IsAdmin))
     {
@@ -357,6 +366,22 @@ static async Task EnsureUserColumns(AppDb db)
           ) THEN
             ALTER TABLE users ADD COLUMN "CanCreateGroups" boolean NOT NULL DEFAULT true;
             ALTER TABLE users ALTER COLUMN "CanCreateGroups" SET DEFAULT false;
+          END IF;
+        END
+        $mig$;
+        """);
+}
+
+static async Task EnsureDeviceColumns(AppDb db)
+{
+    await db.Database.ExecuteSqlRawAsync("""
+        DO $mig$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'device_logins' AND column_name = 'PublicKey'
+          ) THEN
+            ALTER TABLE device_logins ADD COLUMN "PublicKey" character varying(64) NOT NULL DEFAULT '';
           END IF;
         END
         $mig$;
@@ -487,6 +512,7 @@ static RoleTemplate SystemRole(string name, Privilege privileges) => new()
     IsSystem = true
 };
 
+record IdentityBody(string? Username, string? PublicKey);
 record LoginBody(string? Email, string? Password);
 record PasswordBody(string? Current, string? Password);
 record NameBody(string? Name);
