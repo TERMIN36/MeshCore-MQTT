@@ -992,11 +992,12 @@ function advertLabel(type: number) {
   return ["узел", "чат", "репитер", "комната", "датчик"][type] ?? String(type);
 }
 
-const antennaKinds = ["", "всенаправленная", "коллинеар", "штырь", "диполь", "яги", "панель", "магнитная"];
+const antennaKinds = ["", "всенаправленная", "коллинеар", "штырь", "диполь", "яги", "панель", "магнитная", "Maxon"];
 
 function antennaName(type?: number | null) {
-  if (type == null || type < 1 || type > 7) return EMPTY;
-  return antennaKinds[type];
+  if (type == null || type < 1) return EMPTY;
+  if (type < antennaKinds.length) return antennaKinds[type];
+  return `тип ${type}`;
 }
 
 function antennaHeight(meters?: number | null) {

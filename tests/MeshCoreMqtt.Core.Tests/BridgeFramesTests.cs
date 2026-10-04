@@ -408,6 +408,39 @@ public class BridgeFramesTests
     }
 
     [Fact]
+    public void Advert_reads_antenna_type_8_through_15_from_the_second_word()
+    {
+        var maxon = AdvertPayload(2 | 0x40 | 0x80, "Максон", feat2: Feat2(0, kind: 8, aim: false));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Максон", 24, null, Packet(maxon)), out var alone));
+        Assert.Equal("Максон", alone.Packet!.Advert!.Name);
+        Assert.Equal(8, alone.Packet.Advert.AntennaType);
+        Assert.Null(alone.Packet.Advert.HeightMeters);
+        Assert.Null(alone.Packet.Advert.AzimuthDegrees);
+        Assert.Null(alone.Packet.Advert.Latitude);
+
+        var aimed = AdvertPayload(2 | 0x10 | 0x20 | 0x40 | 0x80, "Башня", 55.75, 37.61, Feat(0, 250, height: true), Feat2(180, kind: 8));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Башня", 25, null, Packet(aimed)), out var full));
+        Assert.Equal("Башня", full.Packet!.Advert!.Name);
+        Assert.Equal(55.75, full.Packet.Advert.Latitude!.Value, 6);
+        Assert.Equal(8, full.Packet.Advert.AntennaType);
+        Assert.Equal(25, full.Packet.Advert.HeightMeters!.Value, 3);
+        Assert.Equal(180, full.Packet.Advert.AzimuthDegrees);
+
+        var overridden = AdvertPayload(2 | 0x20 | 0x40 | 0x80, "Старше", feat1: Feat(1, 0, height: false), feat2: Feat2(0, kind: 8, aim: false));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Старше", 26, null, Packet(overridden)), out var high));
+        Assert.Equal("Старше", high.Packet!.Advert!.Name);
+        Assert.Equal(8, high.Packet.Advert.AntennaType);
+        Assert.Null(high.Packet.Advert.HeightMeters);
+        Assert.Null(high.Packet.Advert.AzimuthDegrees);
+
+        var panel = AdvertPayload(2 | 0x20 | 0x40 | 0x80, "Панель", feat1: Feat(6, 0, height: false), feat2: Feat2(45));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Панель", 27, null, Packet(panel)), out var low));
+        Assert.Equal("Панель", low.Packet!.Advert!.Name);
+        Assert.Equal(6, low.Packet.Advert.AntennaType);
+        Assert.Equal(45, low.Packet.Advert.AzimuthDegrees);
+    }
+
+    [Fact]
     public void Path_packet_keeps_route_marks()
     {
         var direct = new List<byte> { (byte)(2 | (8 << 2)), 2, 0xAA, 0xBB, 0x01 };
@@ -589,7 +622,8 @@ public class BridgeFramesTests
     static ushort Feat(int kind, int decimeters, bool height) =>
         (ushort)((height ? 0x8000 : 0) | ((kind & 7) << 12) | (decimeters & 0x0FFF));
 
-    static ushort Feat2(int degrees) => (ushort)(0x8000 | (degrees & 0x1FF));
+    static ushort Feat2(int degrees, int kind = 0, bool aim = true) =>
+        (ushort)((aim ? 0x8000 : 0) | ((kind & 0xF) << 9) | (degrees & 0x1FF));
 
     static byte[] Envelope(byte type, string name, uint seq, uint? unix, List<byte> body)
     {

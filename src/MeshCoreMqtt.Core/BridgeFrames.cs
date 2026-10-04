@@ -636,7 +636,7 @@ public static class BridgeFrames
             i += 8;
         }
 
-        int? antenna = null;
+        int? antennaLow = null;
         double? height = null;
         if ((flags & 0x20) != 0)
         {
@@ -646,22 +646,28 @@ public static class BridgeFrames
             i += 2;
             var kind = (feat1 >> 12) & 0x7;
             if (kind != 0)
-                antenna = kind;
+                antennaLow = kind;
             if ((feat1 & 0x8000) != 0)
                 height = (feat1 & 0x0FFF) / 10d;
         }
 
         int? azimuth = null;
+        int? antennaHigh = null;
         if ((flags & 0x40) != 0)
         {
             if (app.Length < i + 2)
                 return false;
             var feat2 = ReadU16(app.Slice(i, 2));
             i += 2;
+            var kind = (feat2 >> 9) & 0xF;
+            if (kind != 0)
+                antennaHigh = kind;
             var degrees = feat2 & 0x1FF;
             if ((feat2 & 0x8000) != 0 && degrees <= 359)
                 azimuth = degrees;
         }
+
+        var antenna = antennaHigh ?? antennaLow;
 
         var name = (flags & 0x80) != 0 && i <= app.Length
             ? Encoding.UTF8.GetString(app[i..]).TrimEnd('\0')
