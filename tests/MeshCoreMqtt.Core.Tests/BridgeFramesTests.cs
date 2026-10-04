@@ -343,8 +343,68 @@ public class BridgeFramesTests
         Assert.Equal("Север", advert.Name);
         Assert.Equal(55.7558, advert.Latitude!.Value, 6);
         Assert.Equal(37.6176, advert.Longitude!.Value, 6);
+        Assert.Null(advert.AntennaType);
+        Assert.Null(advert.HeightMeters);
+        Assert.Null(advert.AzimuthDegrees);
         Assert.Equal(string.Concat(Enumerable.Repeat("11", 32)), advert.PublicKey);
         Assert.Contains("объявление репитер «Север»", BridgeFrames.Describe(message));
+    }
+
+    [Fact]
+    public void Advert_keeps_the_name_when_antenna_words_follow_the_coordinates()
+    {
+        var payload = AdvertPayload(2 | 0x10 | 0x20 | 0x40 | 0x80, "Север", 55.7558, 37.6176, Feat(5, 125, height: true), Feat2(90));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 16, null, Packet(payload)), out var message));
+        var advert = message.Packet!.Advert!;
+        Assert.Equal("Север", advert.Name);
+        Assert.Equal(55.7558, advert.Latitude!.Value, 6);
+        Assert.Equal(37.6176, advert.Longitude!.Value, 6);
+        Assert.Equal(5, advert.AntennaType);
+        Assert.Equal(12.5, advert.HeightMeters!.Value, 3);
+        Assert.Equal(90, advert.AzimuthDegrees);
+    }
+
+    [Fact]
+    public void Advert_antenna_fields_are_independent_and_zero_azimuth_is_north()
+    {
+        var typeOnly = AdvertPayload(2 | 0x20 | 0x80, "Штырь", feat1: Feat(3, 0, height: false));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Штырь", 17, null, Packet(typeOnly)), out var typed));
+        Assert.Equal("Штырь", typed.Packet!.Advert!.Name);
+        Assert.Equal(3, typed.Packet.Advert.AntennaType);
+        Assert.Null(typed.Packet.Advert.HeightMeters);
+        Assert.Null(typed.Packet.Advert.AzimuthDegrees);
+
+        var heightOnly = AdvertPayload(2 | 0x20 | 0x80, "Высота", feat1: Feat(0, 100, height: true));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Высота", 18, null, Packet(heightOnly)), out var raised));
+        Assert.Null(raised.Packet!.Advert!.AntennaType);
+        Assert.Equal(10, raised.Packet.Advert.HeightMeters!.Value, 3);
+        Assert.Equal("Высота", raised.Packet.Advert.Name);
+
+        var north = AdvertPayload(2 | 0x40 | 0x80, "Север", feat2: Feat2(0));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Север", 19, null, Packet(north)), out var aimed));
+        Assert.Equal(0, aimed.Packet!.Advert!.AzimuthDegrees);
+        Assert.Null(aimed.Packet.Advert.AntennaType);
+        Assert.Equal("Север", aimed.Packet.Advert.Name);
+
+        var bare = AdvertPayload(2 | 0x40 | 0x80, "Пусто", feat2: (ushort)90);
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Пусто", 20, null, Packet(bare)), out var unset));
+        Assert.Null(unset.Packet!.Advert!.AzimuthDegrees);
+
+        var wide = AdvertPayload(2 | 0x40 | 0x80, "Широко", feat2: Feat2(400));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Широко", 21, null, Packet(wide)), out var invalid));
+        Assert.Null(invalid.Packet!.Advert!.AzimuthDegrees);
+        Assert.Equal("Широко", invalid.Packet.Advert.Name);
+
+        var lowBits = AdvertPayload(2 | 0x20 | 0x80, "Нули", feat1: Feat(4, 50, height: false));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Нули", 22, null, Packet(lowBits)), out var dipole));
+        Assert.Equal(4, dipole.Packet!.Advert!.AntennaType);
+        Assert.Null(dipole.Packet.Advert.HeightMeters);
+
+        var ground = AdvertPayload(2 | 0x20 | 0x40 | 0x80, "Ноль", feat1: Feat(1, 0, height: true), feat2: Feat2(0));
+        Assert.True(BridgeFrames.TryDecode(Envelope(1, "Ноль", 23, null, Packet(ground)), out var zero));
+        Assert.Equal(1, zero.Packet!.Advert!.AntennaType);
+        Assert.Equal(0, zero.Packet.Advert.HeightMeters!.Value, 3);
+        Assert.Equal(0, zero.Packet.Advert.AzimuthDegrees);
     }
 
     [Fact]
@@ -498,6 +558,38 @@ public class BridgeFramesTests
     {
         Assert.False(BridgeFrames.TryDecode([2, 1], out _));
     }
+
+    static List<byte> Packet(List<byte> payload)
+    {
+        var packet = new List<byte> { (byte)(1 | (4 << 2)), 0 };
+        packet.AddRange(payload);
+        return packet;
+    }
+
+    static List<byte> AdvertPayload(int flags, string name, double? lat = null, double? lon = null, ushort? feat1 = null, ushort? feat2 = null)
+    {
+        var payload = new List<byte>();
+        payload.AddRange(Enumerable.Repeat((byte)0x11, 32));
+        PutU32(payload, 1700000000);
+        payload.AddRange(new byte[64]);
+        payload.Add((byte)flags);
+        if (lat is { } latitude && lon is { } longitude)
+        {
+            PutI32(payload, (int)Math.Round(latitude * 1_000_000));
+            PutI32(payload, (int)Math.Round(longitude * 1_000_000));
+        }
+        if (feat1 is { } first)
+            PutU16(payload, first);
+        if (feat2 is { } second)
+            PutU16(payload, second);
+        payload.AddRange(System.Text.Encoding.UTF8.GetBytes(name));
+        return payload;
+    }
+
+    static ushort Feat(int kind, int decimeters, bool height) =>
+        (ushort)((height ? 0x8000 : 0) | ((kind & 7) << 12) | (decimeters & 0x0FFF));
+
+    static ushort Feat2(int degrees) => (ushort)(0x8000 | (degrees & 0x1FF));
 
     static byte[] Envelope(byte type, string name, uint seq, uint? unix, List<byte> body)
     {

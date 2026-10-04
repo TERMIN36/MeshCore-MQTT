@@ -610,7 +610,10 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
                 longitude = place.Longitude,
                 repeater = place.Repeater,
                 mqtt = place.Mqtt,
-                seen = place.Seen
+                seen = place.Seen,
+                antennaType = place.AntennaType,
+                heightM = place.HeightMeters,
+                azimuthDeg = place.AzimuthDegrees
             }),
             links = map.Links.Select(link => new
             {
@@ -722,6 +725,9 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         advertType = live.AdvertType,
         advertName = live.AdvertName,
         advertAt = live.AdvertAt,
+        antennaType = live.AntennaType,
+        heightM = live.HeightMeters,
+        azimuthDeg = live.AzimuthDegrees,
         frequencyHz = live.FrequencyHz,
         bandwidthHz = live.BandwidthHz,
         spreadingFactor = live.SpreadingFactor,

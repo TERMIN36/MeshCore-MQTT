@@ -320,7 +320,10 @@ public sealed partial class StatsStore(LiveHub live)
                     node.Longitude,
                     node.Repeater,
                     node.Mqtt,
-                    node.Seen);
+                    node.Seen,
+                    node.AntennaType,
+                    node.HeightMeters,
+                    node.AzimuthDegrees);
             }
 
             var edges = new Dictionary<string, (string From, string To, DateTime Seen)>(StringComparer.OrdinalIgnoreCase);
@@ -421,6 +424,9 @@ public sealed partial class StatsStore(LiveHub live)
             state.AdvertName = advert.Name;
             state.AdvertLatitude = advert.Latitude;
             state.AdvertLongitude = advert.Longitude;
+            state.AntennaType = advert.AntennaType;
+            state.HeightMeters = advert.HeightMeters;
+            state.AzimuthDegrees = advert.AzimuthDegrees;
             state.AdvertAt = advert.Timestamp == 0
                 ? seen
                 : DateTimeOffset.FromUnixTimeSeconds(advert.Timestamp).UtcDateTime;
@@ -464,6 +470,9 @@ public sealed partial class StatsStore(LiveHub live)
 
         if (!node.Mqtt)
             node.Repeater = advert.Type is 2 or 3;
+        node.AntennaType = advert.AntennaType;
+        node.HeightMeters = advert.HeightMeters;
+        node.AzimuthDegrees = advert.AzimuthDegrees;
         node.Seen = seen;
     }
 
@@ -652,7 +661,17 @@ public sealed record FeedRow(Guid NodeId, string Topic, DateTime Seen, string Pu
 
 public sealed record TunnelMap(IReadOnlyList<MapPlace> Nodes, IReadOnlyList<MapHop> Links, IReadOnlyList<MapName> Unplaced);
 
-public sealed record MapPlace(string PublicKey, string Name, double? Latitude, double? Longitude, bool Repeater, bool Mqtt, DateTime Seen);
+public sealed record MapPlace(
+    string PublicKey,
+    string Name,
+    double? Latitude,
+    double? Longitude,
+    bool Repeater,
+    bool Mqtt,
+    DateTime Seen,
+    int? AntennaType = null,
+    double? HeightMeters = null,
+    int? AzimuthDegrees = null);
 
 public sealed record MapName(string Name, DateTime Seen);
 
@@ -666,6 +685,9 @@ sealed class MapNode
     public bool Repeater;
     public bool Mqtt;
     public DateTime Seen;
+    public int? AntennaType;
+    public double? HeightMeters;
+    public int? AzimuthDegrees;
 }
 
 public sealed class RepeaterState
@@ -681,6 +703,9 @@ public sealed class RepeaterState
     public string? AdvertName { get; set; }
     public double? AdvertLatitude { get; set; }
     public double? AdvertLongitude { get; set; }
+    public int? AntennaType { get; set; }
+    public double? HeightMeters { get; set; }
+    public int? AzimuthDegrees { get; set; }
     public DateTime? AdvertAt { get; set; }
     public uint? FrequencyHz { get; set; }
     public uint? BandwidthHz { get; set; }
@@ -736,6 +761,9 @@ public sealed class RepeaterState
             AdvertType,
             AdvertName,
             AdvertAt,
+            AntennaType,
+            HeightMeters,
+            AzimuthDegrees,
             FrequencyHz,
             BandwidthHz,
             SpreadingFactor,
@@ -772,6 +800,9 @@ public sealed record RepeaterLive(
     int? AdvertType,
     string? AdvertName,
     DateTime? AdvertAt,
+    int? AntennaType,
+    double? HeightMeters,
+    int? AzimuthDegrees,
     uint? FrequencyHz,
     uint? BandwidthHz,
     byte? SpreadingFactor,

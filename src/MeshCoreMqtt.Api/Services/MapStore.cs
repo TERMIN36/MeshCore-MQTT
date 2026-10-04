@@ -22,6 +22,9 @@ public static class MapTables
             CONSTRAINT "PK_map_nodes" PRIMARY KEY ("BrokerNodeId", "Tunnel", "PublicKey")
           );
           CREATE INDEX IF NOT EXISTS "IX_map_nodes_Seen" ON map_nodes ("Seen");
+          ALTER TABLE map_nodes ADD COLUMN IF NOT EXISTS "AntennaType" integer NULL;
+          ALTER TABLE map_nodes ADD COLUMN IF NOT EXISTS "HeightM" double precision NULL;
+          ALTER TABLE map_nodes ADD COLUMN IF NOT EXISTS "AzimuthDeg" integer NULL;
           CREATE TABLE IF NOT EXISTS map_links (
             "BrokerNodeId" uuid NOT NULL,
             "Tunnel" character varying(80) NOT NULL,
@@ -54,7 +57,10 @@ public sealed partial class StatsStore
                     Longitude = row.Longitude,
                     Repeater = row.Repeater,
                     Mqtt = row.Mqtt,
-                    Seen = row.Seen
+                    Seen = row.Seen,
+                    AntennaType = row.AntennaType,
+                    HeightMeters = row.HeightM,
+                    AzimuthDegrees = row.AzimuthDeg
                 };
             }
 
@@ -75,7 +81,7 @@ public sealed partial class StatsStore
             foreach (var key in _dirtyNodes)
             {
                 if (_mapNodes.TryGetValue(key, out var node))
-                    nodes.Add(new StoredNode(key.NodeId, key.Tunnel, key.PublicKey, node.Name, node.Latitude, node.Longitude, node.Repeater, node.Mqtt, Utc(node.Seen)));
+                    nodes.Add(new StoredNode(key.NodeId, key.Tunnel, key.PublicKey, node.Name, node.Latitude, node.Longitude, node.Repeater, node.Mqtt, Utc(node.Seen), node.AntennaType, node.HeightMeters, node.AzimuthDegrees));
             }
 
             links = new List<StoredLink>(_dirtyLinks.Count);
@@ -127,15 +133,18 @@ public sealed partial class StatsStore
     static async Task UpsertNode(AppDb db, StoredNode row, CancellationToken ct)
     {
         await db.Database.ExecuteSqlInterpolatedAsync($"""
-            INSERT INTO map_nodes ("BrokerNodeId", "Tunnel", "PublicKey", "Name", "Latitude", "Longitude", "Repeater", "Mqtt", "Seen")
-            VALUES ({row.BrokerNodeId}, {row.Tunnel}, {row.PublicKey}, {row.Name}, {row.Latitude}, {row.Longitude}, {row.Repeater}, {row.Mqtt}, {row.Seen})
+            INSERT INTO map_nodes ("BrokerNodeId", "Tunnel", "PublicKey", "Name", "Latitude", "Longitude", "Repeater", "Mqtt", "Seen", "AntennaType", "HeightM", "AzimuthDeg")
+            VALUES ({row.BrokerNodeId}, {row.Tunnel}, {row.PublicKey}, {row.Name}, {row.Latitude}, {row.Longitude}, {row.Repeater}, {row.Mqtt}, {row.Seen}, {row.AntennaType}, {row.HeightM}, {row.AzimuthDeg})
             ON CONFLICT ("BrokerNodeId", "Tunnel", "PublicKey") DO UPDATE SET
               "Name" = EXCLUDED."Name",
               "Latitude" = EXCLUDED."Latitude",
               "Longitude" = EXCLUDED."Longitude",
               "Repeater" = EXCLUDED."Repeater",
               "Mqtt" = EXCLUDED."Mqtt",
-              "Seen" = EXCLUDED."Seen"
+              "Seen" = EXCLUDED."Seen",
+              "AntennaType" = EXCLUDED."AntennaType",
+              "HeightM" = EXCLUDED."HeightM",
+              "AzimuthDeg" = EXCLUDED."AzimuthDeg"
             """, ct);
     }
 
@@ -160,7 +169,7 @@ public sealed partial class StatsStore
         {
             await using var command = connection.CreateCommand();
             command.CommandText = """
-                SELECT "BrokerNodeId", "Tunnel", "PublicKey", "Name", "Latitude", "Longitude", "Repeater", "Mqtt", "Seen"
+                SELECT "BrokerNodeId", "Tunnel", "PublicKey", "Name", "Latitude", "Longitude", "Repeater", "Mqtt", "Seen", "AntennaType", "HeightM", "AzimuthDeg"
                 FROM map_nodes
                 WHERE "Seen" >= @cutoff
                 ORDER BY "Seen" DESC
@@ -182,7 +191,10 @@ public sealed partial class StatsStore
                     reader.IsDBNull(5) ? null : reader.GetDouble(5),
                     reader.GetBoolean(6),
                     reader.GetBoolean(7),
-                    Utc(reader.GetDateTime(8))));
+                    Utc(reader.GetDateTime(8)),
+                    reader.IsDBNull(9) ? null : reader.GetInt32(9),
+                    reader.IsDBNull(10) ? null : reader.GetDouble(10),
+                    reader.IsDBNull(11) ? null : reader.GetInt32(11)));
             }
         }
         finally
@@ -251,7 +263,10 @@ public sealed partial class StatsStore
         double? Longitude,
         bool Repeater,
         bool Mqtt,
-        DateTime Seen);
+        DateTime Seen,
+        int? AntennaType,
+        double? HeightM,
+        int? AzimuthDeg);
 
     readonly record struct StoredLink(
         Guid BrokerNodeId,

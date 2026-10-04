@@ -636,24 +636,37 @@ public static class BridgeFrames
             i += 8;
         }
 
+        int? antenna = null;
+        double? height = null;
         if ((flags & 0x20) != 0)
         {
             if (app.Length < i + 2)
                 return false;
+            var feat1 = ReadU16(app.Slice(i, 2));
             i += 2;
+            var kind = (feat1 >> 12) & 0x7;
+            if (kind != 0)
+                antenna = kind;
+            if ((feat1 & 0x8000) != 0)
+                height = (feat1 & 0x0FFF) / 10d;
         }
 
+        int? azimuth = null;
         if ((flags & 0x40) != 0)
         {
             if (app.Length < i + 2)
                 return false;
+            var feat2 = ReadU16(app.Slice(i, 2));
             i += 2;
+            var degrees = feat2 & 0x1FF;
+            if ((feat2 & 0x8000) != 0 && degrees <= 359)
+                azimuth = degrees;
         }
 
         var name = (flags & 0x80) != 0 && i <= app.Length
             ? Encoding.UTF8.GetString(app[i..]).TrimEnd('\0')
             : "";
-        advert = new AdvertBody(key, timestamp, flags & 0x0F, name, lat, lon);
+        advert = new AdvertBody(key, timestamp, flags & 0x0F, name, lat, lon, antenna, height, azimuth);
         return true;
     }
 
@@ -737,4 +750,7 @@ public sealed record AdvertBody(
     int Type,
     string Name,
     double? Latitude,
-    double? Longitude);
+    double? Longitude,
+    int? AntennaType = null,
+    double? HeightMeters = null,
+    int? AzimuthDegrees = null);

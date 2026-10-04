@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
-type Point = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean; mqtt?: boolean; seen?: string };
+type Point = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean; mqtt?: boolean; seen?: string; antennaType?: number | null; azimuthDeg?: number | null };
 type Edge = { from: string; to: string; seen: string };
 type Ghost = { name: string; seen: string };
 type Space = {
@@ -119,6 +119,11 @@ export function GroupMap({ group, onOpenDevice }: {
         <img key={tile.key} className="group-map-tile" alt="" src={tile.url} style={{ left: tile.left, top: tile.top }} />
       ))}
       <svg className="group-map-links" width={size.width} height={size.height}>
+        <defs>
+          <marker id="antenna-aim" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L10 5 L0 10 Z" fill="context-stroke" />
+          </marker>
+        </defs>
         {lines.map((line) => {
           const from = byKey.get(line.spaceId + "\n" + line.from.toLowerCase());
           const to = byKey.get(line.spaceId + "\n" + line.to.toLowerCase());
@@ -137,6 +142,28 @@ export function GroupMap({ group, onOpenDevice }: {
                 </text>
               )}
             </g>
+          );
+        })}
+        {markers.map((marker) => {
+          if (marker.azimuthDeg == null || (marker.antennaType !== 5 && marker.antennaType !== 6)) return null;
+          const at = screen(marker.latitude, marker.longitude);
+          const rad = marker.azimuthDeg * Math.PI / 180;
+          const dx = Math.sin(rad);
+          const dy = -Math.cos(rad);
+          const kind = marker.antennaType === 5 ? "яги" : "панель";
+          return (
+            <line
+              key={`aim-${marker.spaceId}-${marker.publicKey}`}
+              className="antenna-aim"
+              x1={at.x + dx * 12}
+              y1={at.y + dy * 12}
+              x2={at.x + dx * 40}
+              y2={at.y + dy * 40}
+              stroke={marker.color}
+              markerEnd="url(#antenna-aim)"
+            >
+              <title>{`${marker.name || "узел"} · ${kind} ${marker.azimuthDeg}°`}</title>
+            </line>
           );
         })}
       </svg>

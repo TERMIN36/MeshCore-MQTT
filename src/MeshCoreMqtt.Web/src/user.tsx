@@ -21,6 +21,9 @@ type Live = {
   advertType?: number | null;
   advertName?: string | null;
   advertAt?: string | null;
+  antennaType?: number | null;
+  heightM?: number | null;
+  azimuthDeg?: number | null;
   frequencyHz?: number | null;
   bandwidthHz?: number | null;
   spreadingFactor?: number | null;
@@ -46,7 +49,7 @@ type TunnelDestination = { groupId: string; groupName: string; spaceId: string; 
 type Activity = { topic: string; messagesPerMinute: number; lastSeen: string };
 type FeedItem = { topic: string; seen: string; publicKey: string; name: string; summary: string; kind?: string };
 type Login = { id: string; name: string; config: string };
-type MapPoint = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean; mqtt?: boolean; seen?: string };
+type MapPoint = { publicKey: string; name: string; latitude: number; longitude: number; repeater: boolean; mqtt?: boolean; seen?: string; antennaType?: number | null; heightM?: number | null; azimuthDeg?: number | null };
 type MapEdge = { from: string; to: string; seen: string };
 type SpaceNode = { id: string; name: string; privileges: string[]; devices: Device[]; activity: Activity[]; feed?: FeedItem[]; map?: { nodes: MapPoint[]; links: MapEdge[]; unplaced?: { name: string; seen: string }[] } };
 type GroupNode = { id: string; name: string; owner: string; ownerEmail: string; createdAt: string; mine: boolean; privileges: string[]; spaces: SpaceNode[]; spaceChoices: SpaceChoice[]; grants: Grant[] };
@@ -659,6 +662,9 @@ function RepeaterFace({ name, live, createdAt }: { name: string; live?: Live | n
         <span className="muted">{advert ?? (live ? "На связи" : "Нет объявления")}</span>
       </span>
       <span className="muted">{coords ? `${live?.locationFromAdvert ? "объявление" : "координаты"} ${coords}` : "Координат нет"}</span>
+      <span className="muted">Антенна: {antennaName(live?.antennaType)}</span>
+      <span className="muted">Высота: {antennaHeight(live?.heightM)}</span>
+      <span className="muted">Направление: {antennaAzimuth(live?.azimuthDeg)}</span>
       <span className="muted">{cardStatus(live, createdAt)}</span>
     </>
   );
@@ -798,6 +804,9 @@ function RepeaterSheet({ title, live, secret, destinations, onMove, onDelete }: 
         ["Публичный ключ", live?.publicKey || EMPTY],
         ["Широта", live?.latitude == null ? EMPTY : live.latitude.toFixed(6)],
         ["Долгота", live?.longitude == null ? EMPTY : live.longitude.toFixed(6)],
+        ["Антенна", antennaName(live?.antennaType)],
+        ["Высота", antennaHeight(live?.heightM)],
+        ["Направление", antennaAzimuth(live?.azimuthDeg)],
         ["Последнее объявление", live?.advertAt ? new Date(live.advertAt).toLocaleString() : EMPTY]
       ]} />
       <h2>Радио и статистика</h2>
@@ -981,6 +990,23 @@ function MessageFeed({ rows }: { rows: FeedItem[] }) {
 
 function advertLabel(type: number) {
   return ["узел", "чат", "репитер", "комната", "датчик"][type] ?? String(type);
+}
+
+const antennaKinds = ["", "всенаправленная", "коллинеар", "штырь", "диполь", "яги", "панель", "магнитная"];
+
+function antennaName(type?: number | null) {
+  if (type == null || type < 1 || type > 7) return EMPTY;
+  return antennaKinds[type];
+}
+
+function antennaHeight(meters?: number | null) {
+  if (meters == null) return EMPTY;
+  return `${meters.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} м`;
+}
+
+function antennaAzimuth(degrees?: number | null) {
+  if (degrees == null) return EMPTY;
+  return `${degrees}°`;
 }
 
 function place(latitude?: number | null, longitude?: number | null) {
