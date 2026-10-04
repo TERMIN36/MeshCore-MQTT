@@ -277,7 +277,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                 <div className="scene-title">
                   <h2>{group.name} / {space.name}{group.mine ? "" : ` · ${group.owner}`}</h2>
                   <div className="row actions">
-                    {space.privileges.includes("credentials") && (
+                    {space.privileges.includes("provision") && (
                       <button type="button" onClick={() => setAddingDevice((open) => !open)}>{addingDevice ? "Закрыть" : "Добавить репитер"}</button>
                     )}
                     {canManageSpace && (
@@ -301,7 +301,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                 )}
               </header>
               <div className="scene-body">
-                {addingDevice && space.privileges.includes("credentials") && (
+                {addingDevice && space.privileges.includes("provision") && (
                   <div className="drawer">
                     <DeviceForm
                       spaceId={space.id}
@@ -322,10 +322,11 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                     <MessageFeed key={space.id} rows={space.feed ?? []} />
                   </div>
                 )}
+                {(space.privileges.includes("credentials") || space.privileges.includes("provision")) && (
                 <section className="sheet repeater-board">
                   <h2>Репитеры</h2>
-                  {space.privileges.includes("credentials") && space.devices.length === 0 && (
-                    <p className="muted">В этом тунеле репитеров ещё нет. «Добавить репитер» выдаст строку настройки.</p>
+                  {space.devices.length === 0 && (
+                    <p className="muted">{space.privileges.includes("provision") ? "В этом тунеле репитеров ещё нет. «Добавить репитер» выдаст строку настройки." : "В этом тунеле репитеров ещё нет."}</p>
                   )}
                   {space.devices.length > 0 && (
                     <div className="repeater-grid">
@@ -343,14 +344,15 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                     </div>
                   )}
                 </section>
-                {device && (space.privileges.includes("credentials") || space.privileges.includes("view")) && (
+                )}
+                {device && (space.privileges.includes("credentials") || space.privileges.includes("provision") || space.privileges.includes("view")) && (
                   <RepeaterSheet
                     key={device.id}
                     title={device.name}
                     live={device.live}
-                    secret={space.privileges.includes("credentials") ? secrets[device.id] : undefined}
-                    destinations={space.privileges.includes("credentials") ? moveTargets(groups, device, space.id) : undefined}
-                    onMove={space.privileges.includes("credentials") ? async (target) => {
+                    secret={space.privileges.includes("provision") ? secrets[device.id] : undefined}
+                    destinations={space.privileges.includes("provision") ? moveTargets(groups, device, space.id) : undefined}
+                    onMove={space.privileges.includes("provision") ? async (target) => {
                       try {
                         setError("");
                         await api(`/api/devices/${device.id}/move`, { method: "POST", body: JSON.stringify({ spaceId: target.spaceId }) });
@@ -361,7 +363,7 @@ export function GroupsPage({ email, onLogout }: { email: string; onLogout: () =>
                         throw err;
                       }
                     } : undefined}
-                    onDelete={space.privileges.includes("credentials") ? async () => {
+                    onDelete={space.privileges.includes("provision") ? async () => {
                       try {
                         await api(`/api/devices/${device.id}`, { method: "DELETE" });
                         setSecrets((current) => {
@@ -667,7 +669,7 @@ function moveTargets(groups: GroupNode[], device: Device, currentSpaceId: string
   for (const group of groups) {
     for (const space of group.spaces) {
       if (space.id === currentSpaceId) continue;
-      if (!space.privileges.includes("credentials")) continue;
+      if (!space.privileges.includes("provision")) continue;
       if (device.canSubscribe && !space.privileges.includes("subscribe")) continue;
       if (device.canPublish && !space.privileges.includes("publish")) continue;
       rows.push({ groupId: group.id, groupName: group.name, spaceId: space.id, spaceName: space.name });

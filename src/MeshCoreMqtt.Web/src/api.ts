@@ -4,7 +4,8 @@ const privileges = [
   ["view", "Смотреть сообщения"],
   ["subscribe", "Чтение"],
   ["publish", "Запись"],
-  ["credentials", "Логины репитеров"],
+  ["credentials", "Смотреть репитеры"],
+  ["provision", "Добавлять репитеры"],
   ["topics", "Служебное"],
   ["access", "Управление доступом"]
 ] as const;

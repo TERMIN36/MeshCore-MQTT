@@ -10,7 +10,8 @@ public enum Privilege
     Credentials = 8,
     Topics = 16,
     Access = 32,
-    All = View | Subscribe | Publish | Credentials | Topics | Access
+    Provision = 64,
+    All = View | Subscribe | Publish | Credentials | Topics | Access | Provision
 }
 
 public enum NodeStatus

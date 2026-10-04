@@ -139,7 +139,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         {
             var privileges = PrivilegesOn(group, userId, mine, space.Id);
             var heard = privileges.HasFlag(Privilege.View) ? NodesFor(space) : [];
-            var devices = privileges.HasFlag(Privilege.Credentials)
+            var devices = SeesRepeaters(privileges)
                 ? await DeviceViews(space.Devices, heard, ct)
                 : Array.Empty<object>();
             rows.Add(new
@@ -256,7 +256,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
             groupName = space.Group.Name,
             privileges = PrivilegeText.ToNames(privileges),
             connection = new { host = secrets.Value.PublicHost, port = secrets.Value.PublicPort, tls = true },
-            devices = privileges.HasFlag(Privilege.Credentials)
+            devices = SeesRepeaters(privileges)
                 ? await DeviceViews(space.Devices, privileges.HasFlag(Privilege.View) ? NodesFor(space) : [], ct)
                 : Array.Empty<object>(),
             activity = privileges.HasFlag(Privilege.View) ? ActivityFor(space) : Array.Empty<object>(),
@@ -289,7 +289,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
     {
         var space = await LoadSpace(spaceId, ct);
         var privileges = await access.OnSpace(userId, space, ct);
-        access.Require(privileges, Privilege.Credentials);
+        access.Require(privileges, Privilege.Provision);
         if (!canSubscribe && !canPublish)
             throw new AppException(400, "Клиенту нужна подписка или публикация");
         if (canSubscribe)
@@ -339,7 +339,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
     {
         var device = await db.DeviceLogins.Include(d => d.Space).ThenInclude(s => s.Group).FirstOrDefaultAsync(d => d.Id == deviceId, ct)
             ?? throw new AppException(404, "Клиент не найден");
-        access.Require(await access.OnSpace(userId, device.Space, ct), Privilege.Credentials);
+        access.Require(await access.OnSpace(userId, device.Space, ct), Privilege.Provision);
         db.DeviceLogins.Remove(device);
         await db.SaveChangesAsync(ct);
         cache.Invalidate();
@@ -351,7 +351,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         var device = await db.DeviceLogins.Include(d => d.Space).ThenInclude(s => s.Group).FirstOrDefaultAsync(d => d.Id == deviceId, ct)
             ?? throw new AppException(404, "Клиент не найден");
         var source = device.Space;
-        access.Require(await access.OnSpace(userId, source, ct), Privilege.Credentials);
+        access.Require(await access.OnSpace(userId, source, ct), Privilege.Provision);
         if (source.IsMoving)
             throw new AppException(409, "Этот тунель сейчас переносится");
         if (source.Id == targetSpaceId)
@@ -361,7 +361,7 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         var targetPrivileges = await access.OnSpace(userId, target, ct);
         if (targetPrivileges == Privilege.None)
             throw new AppException(404, "Тунель не найден");
-        access.Require(targetPrivileges, Privilege.Credentials);
+        access.Require(targetPrivileges, Privilege.Provision);
         if (device.CanSubscribe && !targetPrivileges.HasFlag(Privilege.Subscribe))
             throw new AppException(403, "В тунеле назначения нет права на чтение");
         if (device.CanPublish && !targetPrivileges.HasFlag(Privilege.Publish))
@@ -761,6 +761,9 @@ public sealed class Catalog(AppDb db, Access access, Passwords passwords, Decisi
         admin = user.IsAdmin,
         canCreateGroups = user.CanCreateGroups
     };
+
+    static bool SeesRepeaters(Privilege privileges) =>
+        privileges.HasFlag(Privilege.Credentials) || privileges.HasFlag(Privilege.Provision);
 
     static Privilege PrivilegesOn(Group group, Guid userId, IEnumerable<GrantTunnel> mine, Guid spaceId)
     {

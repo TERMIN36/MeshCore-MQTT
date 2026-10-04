@@ -350,9 +350,37 @@ static async Task InitializeAsync(WebApplication app, AppSecrets secrets)
     await db.SaveChangesAsync();
     await EnsureNameIndexes(db, app.Logger);
     await MigrateGrants(db);
+    await SplitRepeaterPrivileges(db);
     await db.Database.ExecuteSqlRawAsync("""DROP TABLE IF EXISTS topic_filters""");
     await MapTables.Ensure(db);
     await scope.ServiceProvider.GetRequiredService<StatsStore>().LoadMapAsync(db, CancellationToken.None);
+}
+
+static async Task SplitRepeaterPrivileges(AppDb db)
+{
+    // Бит 8 — смотреть репитеры, бит 64 — добавлять. Уже выданные права сохраняют добавление.
+    // Роль «Оператор» остаётся только на просмотр, чтобы её можно было выдать отдельно.
+    await db.Database.ExecuteSqlRawAsync("""
+        DO $mig$
+        BEGIN
+          CREATE TABLE IF NOT EXISTS schema_markers (
+            "Name" text PRIMARY KEY
+          );
+          IF NOT EXISTS (SELECT 1 FROM schema_markers WHERE "Name" = 'repeater-provision') THEN
+            UPDATE roles
+            SET "Privileges" = "Privileges" | 64
+            WHERE ("Privileges" & 8) <> 0
+              AND NOT ("IsSystem" = true AND "Name" = 'Оператор');
+
+            UPDATE grant_tunnels
+            SET "Privileges" = "Privileges" | 64
+            WHERE ("Privileges" & 8) <> 0;
+
+            INSERT INTO schema_markers ("Name") VALUES ('repeater-provision');
+          END IF;
+        END
+        $mig$;
+        """);
 }
 
 static async Task EnsureUserColumns(AppDb db)

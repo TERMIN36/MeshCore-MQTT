@@ -35,6 +35,7 @@ public static class PrivilegeText
         (Privilege.Subscribe, "subscribe"),
         (Privilege.Publish, "publish"),
         (Privilege.Credentials, "credentials"),
+        (Privilege.Provision, "provision"),
         (Privilege.Topics, "topics"),
         (Privilege.Access, "access")
     ];
