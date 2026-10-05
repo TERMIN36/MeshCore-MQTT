@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { api, safeReturn, setToken, token, type User } from "./api";
 import { AccountPage, AccountsPage, ActivityPage, CertificatePage, NodesPage, SharingPage } from "./admin";
-import { GroupsPage, PanelBar, PasswordDialog } from "./user";
+import { AccessNotice, GroupsPage, PanelBar, PasswordDialog } from "./user";
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -67,6 +67,7 @@ function Login({ onUser }: { onUser: (user: User) => void }) {
         <strong>MeshCore</strong>
       </div>
       <p className="muted">Подключение репитеров и доступ к ним.</p>
+      <AccessNotice />
       <label>Почта<input value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" /></label>
       <label>Пароль<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" /></label>
       {error && <p className="error">{error}</p>}

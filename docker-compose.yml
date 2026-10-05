@@ -76,6 +76,8 @@ services:
       dockerfile: docker/web.Dockerfile
     ports:
       - "8088:80"
+    environment:
+      ACCESS_MODE: "Личное пользование"
     depends_on:
       - api
 

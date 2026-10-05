@@ -91,6 +91,30 @@ function pathsMatch(left: string, right: string) {
   try { return decodeURI(left) === decodeURI(right); } catch { return left === right; }
 }
 
+export const personalUseNotice =
+  "Сервер предназначен исключительно для личного пользования. Развёртывание для коммерческих целей или интересов третьих лиц запрещено законом РФ.";
+
+declare global {
+  interface Window {
+    ACCESS_MODE?: string;
+  }
+}
+
+export function accessMode() {
+  const value = window.ACCESS_MODE;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function AccessNotice() {
+  const mode = accessMode();
+  return (
+    <p className="access-note">
+      {mode && <span className="access-mode">{mode}</span>}
+      <span>{personalUseNotice}</span>
+    </p>
+  );
+}
+
 export function PanelBar({ email }: { email?: string }) {
   return (
     <header className="topbar">
@@ -98,6 +122,7 @@ export function PanelBar({ email }: { email?: string }) {
         <img className="brand-mark" src="/icon.svg" alt="" />
         <strong>MeshCore</strong>
       </div>
+      <AccessNotice />
       {email && <span className="session-email" title={email}>{email}</span>}
     </header>
   );

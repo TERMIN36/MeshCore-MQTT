@@ -87,7 +87,47 @@ textarea { min-height: 8rem; resize: vertical; }
   background: var(--panel);
 }
 
-.topbar { justify-content: space-between; border-bottom: 1px solid var(--line); }
+.topbar {
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  height: auto;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.access-note {
+  display: flex;
+  flex: 1 1 280px;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.access-mode {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.login .access-note {
+  display: block;
+  flex: none;
+  margin: 0 0 14px;
+}
+
+.login .access-mode {
+  display: inline-block;
+  margin: 0 6px 4px 0;
+}
 
 .session-email {
   min-width: 0;
